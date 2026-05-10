@@ -1,0 +1,73 @@
+
+Copying pico-examples...
+PICO_SDK_VERSION=1.5.1
+PICO_INSTALL_PATH=d:\Program Files\Raspberry Pi\Pico SDK v1.5.1
+PICO_REG_KEY=Software\Raspberry Pi\Pico SDK v1.5.1
+操作成功完成。
+PICO_repos_PATH=C:\Users\denjhang\Documents\Pico-v1.5.1
+PICO_examples_PATH=C:\Users\denjhang\Documents\Pico-v1.5.1\pico-examples
+PICO_extras_PATH=C:\Users\denjhang\Documents\Pico-v1.5.1\pico-extras
+PICO_playground_PATH=C:\Users\denjhang\Documents\Pico-v1.5.1\pico-playground
+OPENOCD_SCRIPTS=d:\Program Files\Raspberry Pi\Pico SDK v1.5.1\openocd\scripts
+Checking "GNU Arm Embedded Toolchain"...
+Checking "CMake"...
+Checking "Ninja"...
+Checking "Python 3"...
+Checking "Git"...
+C:\Users\denjhang\Documents\Pico-v1.5.1\pico-examples exists, skipping clone
+C:\Users\denjhang\Documents\Pico-v1.5.1\pico-extras exists, skipping clone
+C:\Users\denjhang\Documents\Pico-v1.5.1\pico-playground exists, skipping clone
+Using PICO_SDK_PATH from environment ('d:\Program Files\Raspberry Pi\Pico SDK v1.5.1\pico-sdk')
+PICO_SDK_PATH is D:/Program Files/Raspberry Pi/Pico SDK v1.5.1/pico-sdk
+Defaulting PICO_PLATFORM to rp2040 since not specified.
+Defaulting PICO platform compiler to pico_arm_gcc since not specified.
+PICO compiler is pico_arm_gcc
+Using PICO_EXTRAS_PATH from environment ('C:\Users\denjhang\Documents\Pico-v1.5.1\pico-extras')
+-- The C compiler identification is GNU 10.3.1
+-- The CXX compiler identification is GNU 10.3.1
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: D:/Program Files/Raspberry Pi/Pico SDK v1.5.1/gcc-arm-none-eabi/bin/arm-none-eabi-gcc.exe - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: D:/Program Files/Raspberry Pi/Pico SDK v1.5.1/gcc-arm-none-eabi/bin/arm-none-eabi-g++.exe - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- The ASM compiler identification is GNU
+-- Found assembler: D:/Program Files/Raspberry Pi/Pico SDK v1.5.1/gcc-arm-none-eabi/bin/arm-none-eabi-gcc.exe
+Build type is Debug
+Using regular optimized debug build (set PICO_DEOPTIMIZED_DEBUG=1 to de-optimize)
+Defaulting PICO target board to pico since not specified.
+Using board configuration from D:/Program Files/Raspberry Pi/Pico SDK v1.5.1/pico-sdk/src/boards/include/boards/pico.h
+-- Found Python3: D:/msys64/mingw64/bin/python3.12.exe (found version "3.12.12") found components: Interpreter
+TinyUSB available at D:/Program Files/Raspberry Pi/Pico SDK v1.5.1/pico-sdk/lib/tinyusb/src/portable/raspberrypi/rp2040; enabling build support for USB.
+Compiling TinyUSB with CFG_TUSB_DEBUG=1
+BTstack available at D:/Program Files/Raspberry Pi/Pico SDK v1.5.1/pico-sdk/lib/btstack
+cyw43-driver available at D:/Program Files/Raspberry Pi/Pico SDK v1.5.1/pico-sdk/lib/cyw43-driver
+Pico W Bluetooth build support available.
+lwIP available at D:/Program Files/Raspberry Pi/Pico SDK v1.5.1/pico-sdk/lib/lwip
+mbedtls available at D:/Program Files/Raspberry Pi/Pico SDK v1.5.1/pico-sdk/lib/mbedtls
+-- Configuring done
+-- Generating done
+-- Build files have been written to: C:/Users/denjhang/Documents/Pico-v1.5.1/pico-examples/build
+Building blink
+[51/51] Linking CXX executable blink\blink.elf
+Building "hello_world/all"
+[118/118] Linking CXX executable hello_world\usb\hello_usb.elf
+请按任意键继续. . .
+
+
+C:\Users\denjhang\Documents\Pico-v1.5.1
+
+
+至于真正完整的状态机可参考这里，毕竟spfm是下位机控制时序，这里有精确时序给你参考：D:\working\vscode-projects\Reference_Project\megagrrl-driver-revamp-2-20240226-saa\firmware\main\driver.c
+
+
+
+RPFM是一个使用RP2350A的SPFM精神续作，
+先阅读D:\working\vscode-projects\YM2163-Midi\Denjhang_Music_Player_v16\docs\SPFM_UPGRADE.md
+打算使用rp2350a开发板直接连接到ym2413声卡进行测试。
+Denjhang_Music_Player_v16项目已经内涵ym2413的驱动。
+你要设计硬件接线，然后让rp2350a能用pio来驱动ym2413发出声音

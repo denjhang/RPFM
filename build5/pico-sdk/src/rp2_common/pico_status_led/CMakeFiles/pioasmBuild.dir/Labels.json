@@ -1,0 +1,43 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "/d/working/vscode-projects/YM2163-Midi/RPFM/build5/pico-sdk/src/rp2_common/pico_status_led/CMakeFiles/pioasmBuild"
+		},
+		{
+			"file" : "/d/working/vscode-projects/YM2163-Midi/RPFM/build5/pico-sdk/src/rp2_common/pico_status_led/CMakeFiles/pioasmBuild.rule"
+		},
+		{
+			"file" : "/d/working/vscode-projects/YM2163-Midi/RPFM/build5/pico-sdk/src/rp2_common/pico_status_led/CMakeFiles/pioasmBuild-complete.rule"
+		},
+		{
+			"file" : "/d/working/vscode-projects/YM2163-Midi/RPFM/build5/pico-sdk/src/rp2_common/pico_status_led/pioasm/src/pioasmBuild-stamp/pioasmBuild-build.rule"
+		},
+		{
+			"file" : "/d/working/vscode-projects/YM2163-Midi/RPFM/build5/pico-sdk/src/rp2_common/pico_status_led/pioasm/src/pioasmBuild-stamp/pioasmBuild-configure.rule"
+		},
+		{
+			"file" : "/d/working/vscode-projects/YM2163-Midi/RPFM/build5/pico-sdk/src/rp2_common/pico_status_led/pioasm/src/pioasmBuild-stamp/pioasmBuild-download.rule"
+		},
+		{
+			"file" : "/d/working/vscode-projects/YM2163-Midi/RPFM/build5/pico-sdk/src/rp2_common/pico_status_led/pioasm/src/pioasmBuild-stamp/pioasmBuild-install.rule"
+		},
+		{
+			"file" : "/d/working/vscode-projects/YM2163-Midi/RPFM/build5/pico-sdk/src/rp2_common/pico_status_led/pioasm/src/pioasmBuild-stamp/pioasmBuild-mkdir.rule"
+		},
+		{
+			"file" : "/d/working/vscode-projects/YM2163-Midi/RPFM/build5/pico-sdk/src/rp2_common/pico_status_led/pioasm/src/pioasmBuild-stamp/pioasmBuild-patch.rule"
+		},
+		{
+			"file" : "/d/working/vscode-projects/YM2163-Midi/RPFM/build5/pico-sdk/src/rp2_common/pico_status_led/pioasm/src/pioasmBuild-stamp/pioasmBuild-update.rule"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"pioasmBuild"
+		],
+		"name" : "pioasmBuild"
+	}
+}

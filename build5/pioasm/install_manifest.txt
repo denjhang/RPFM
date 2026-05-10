@@ -1,0 +1,5 @@
+/d/working/vscode-projects/YM2163-Midi/RPFM/build5/pioasm-install/pioasm/pioasm.exe
+/d/working/vscode-projects/YM2163-Midi/RPFM/build5/pioasm-install/pioasm/pioasmTargets.cmake
+/d/working/vscode-projects/YM2163-Midi/RPFM/build5/pioasm-install/pioasm/pioasmTargets-release.cmake
+/d/working/vscode-projects/YM2163-Midi/RPFM/build5/pioasm-install/pioasm/pioasmConfig.cmake
+/d/working/vscode-projects/YM2163-Midi/RPFM/build5/pioasm-install/pioasm/pioasmConfigVersion.cmake
