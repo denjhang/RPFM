@@ -7,15 +7,17 @@ cd "$(dirname "$0")"
 SDK_PATH="$(pwd)/pico-sdk-2.2.0"
 BUILD_DIR="build"
 
-rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
 
 echo "=== Configuring ==="
+echo "Using Unix Makefiles"
 PICO_SDK_PATH="$SDK_PATH" cmake -G "Unix Makefiles" \
     -DPICO_PLATFORM=rp2350 \
     -DPICO_BOARD=pico2 \
+    -DPICO_CONFIG_HEADER_FILE="${SDK_PATH}/../pico_sdk_config.h" \
     ..
+BUILD_CMD="make -j2"
 
 echo "=== Fixing MSYS2 path issue ==="
 AUTOGEN="generated/pico_base/pico/config_autogen.h"
@@ -27,7 +29,7 @@ if [ -f "$AUTOGEN" ]; then
 fi
 
 echo "=== Building ==="
-make -j4
+$BUILD_CMD
 
 echo ""
 echo "=== Build SUCCESS ==="

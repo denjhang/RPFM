@@ -11,6 +11,9 @@ endif()
 
 include(pico_sdk_import.cmake)
 
+# Custom config: disable vendor reset interface for Windows CDC compatibility
+list(APPEND PICO_CONFIG_HEADER_FILES ${CMAKE_CURRENT_SOURCE_DIR}/pico_sdk_config.h)
+
 project(rpfm_ym2413_test C CXX ASM)
 
 pico_sdk_init()
@@ -27,6 +30,7 @@ target_link_libraries(rpfm_ym2413_test PRIVATE
     hardware_pio
 )
 
-pico_enable_stdio_uart(rpfm_ym2413_test 1)
+pico_enable_stdio_usb(rpfm_ym2413_test 1)
+pico_enable_stdio_uart(rpfm_ym2413_test 0)
 
 pico_add_extra_outputs(rpfm_ym2413_test)

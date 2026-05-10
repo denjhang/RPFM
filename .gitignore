@@ -1,0 +1,15 @@
+build/
+*.uf2
+*.elf
+*.bin
+*.hex
+*.dis
+*.map
+*.exe
+*.o
+*.d
+tinyusb-0.20.0/
+reference/
+main_bitbang.c
+rpfm_bitbang.uf2
+fix_path.cmake
