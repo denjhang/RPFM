@@ -16,10 +16,10 @@ project(rpfm_ym2413_test C CXX ASM)
 pico_sdk_init()
 
 add_executable(rpfm_ym2413_test
-    main.c
+    src/main.c
 )
 
-pico_generate_pio_header(rpfm_ym2413_test ${CMAKE_CURRENT_SOURCE_DIR}/ym2413.pio)
+pico_generate_pio_header(rpfm_ym2413_test ${CMAKE_CURRENT_SOURCE_DIR}/src/ym2413.pio)
 
 target_link_libraries(rpfm_ym2413_test PRIVATE
     pico_stdlib
