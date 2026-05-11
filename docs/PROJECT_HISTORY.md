@@ -7,30 +7,70 @@
 
 ---
 
-## 第一代：IAP-SPFM（2022）
+## 原版硬件克隆（早期）
+
+通过国内外网友提供的原始硬件，直接提取克隆固件。这些克隆版本已经能正常工作，是整个项目的起点。
+
+### SPFM Light（PIC18F2550）
+
+**MCU：** PIC18F2550
+**性质：** 从原版 SPFM Light 硬件提取克隆，非自研
+**握手：** 使用 LT 回文（发送 0xFF，回复 "LT"）— 2 卡槽模式
+
+这是最早接触到的 SPFM 固件。LT 代表 2 卡槽（2-slot），RS 代表 4 卡槽（4-slot）。
+克隆版功能完整，开箱即用。
+
+### RESPFM（PIC18F25K22）
+
+**MCU：** PIC18F25K22
+**性质：** 从原版 RESPFM 硬件提取克隆，非自研
+
+原版 RESPFM 固件直接提取使用。
+
+这两个克隆版本证明 SCCI 协议和 SPFM 总线方案完全可行，为后续自研提供了验证基础。
+
+---
+
+## 协议逆向（2023）
+
+早期克隆版只有固件二进制，不了解协议细节。2023 年通过虚拟串口穷举，
+才搞清楚 SCCI 协议的完整握手流程：
+
+- 0xFF → "RS" 回文 — 4 卡槽模式（SCCI 标准）
+- 0xFF → "LT" 回文 — 2 卡槽模式（SPFM Light 兼容）
+- 0xFE → 复位，回复 "OK"
+- 寄存器写入：cmd 0x00（地址+数据两字节）/ cmd 0x80（直接写入）
+
+在此之前只知道 LT 回文（2 卡槽），RS（4 卡槽）是穷举出来的。这个突破让自研固件成为可能。
+
+---
+
+## 自研系列
+
+### IAP-SPFM（2022）
 
 **硬件：** FM塔 SPFM 初代硬件
 **MCU：** STC 8 位单片机（低成本方案，STC12C5A60S2 系列）
-**协议：** SCCI 1.0
+**协议：** SCCI 1.0（兼容 LT 回文）
 
-初代 SPFM 硬件，奠定了整个项目的架构基础：
+初代自研 SPFM 硬件，奠定了整个项目的架构基础：
 - SPFM 总线定义（D0-D7 + WR# + A0-A3 + CS0-CS3）
-- SCCI 握手协议（0xFF → "RS"，0xFE → "OK"）
+- SCCI 握手协议
 - 多芯片片选复用数据总线
 
 ```
 PC ──USB CDC──→ STC 8-bit ──GPIO bitbang──→ YM2413
 ```
 
-## 第二代：IAP-SPFM 二代改版（2022）
+### IAP-SPFM 二代改版（2022）
 
-**硬件改版：** IAP SPFM 二代硬件、SPFM Light
+**硬件改版：** IAP SPFM 二代硬件
 **MCU：** STC 8 位单片机
 **源码路径：** `IAP SPFM-二代硬件改版/iap-src/main.c`（2022.12.10）
 
 硬件迭代，改进 PCB 设计和 USB 接口。
 
-## 第三代：IAP-RESPFM（2023 年底）
+### IAP-RESPFM（2023 年底）
 
 **硬件：** DIP40 版本 → TQFP64 封装
 **MCU：** STC 8 位单片机（STC12C5A60S2）
@@ -127,15 +167,17 @@ YMF288M2024.8.11.hex
 
 ## 项目源码位置索引
 
-| 项目 | MCU | 路径 | 时间 |
-|------|-----|------|------|
-| FM塔 SPFM 初代 | STC 8-bit | `SPFM/FM塔 SPFM-初代硬件/` | 2022 |
-| IAP SPFM 二代 | STC 8-bit | `SPFM/IAP SPFM-二代硬件改版/` | 2022 |
-| IAP-RESPFM 三代 | STC 8-bit (STC12C5A60S2) | `SPFM/IAP-RESPFM-自制3代/` | 2023.11-12 |
-| STM32-RESPFM | STM32F103 | `RE2-RESPFM/STM32-RESPFM/` | 2024.06-09 |
-| STM32 SPFM DIY 参考 | STM32F103 | `reference/20240827_stm32f103_SPFM_DIY/` | 2024.08 |
-| PIC18F 尝试 | PIC18F25K22 | `RE2-RESPFM/PIC18F25K22-RESPFM/` | 2024.12 |
-| **RPFM（当前）** | RP2350A | `RPFM/` | 2026.05 |
+| 项目 | MCU | 性质 | 路径 | 时间 |
+|------|-----|------|------|------|
+| SPFM Light 克隆 | PIC18F2550 | 提取克隆 | `SPFM/SPFM light-第二代硬件/` | 早期 |
+| RESPFM 克隆 | PIC18F25K22 | 提取克隆 | — | 早期 |
+| FM塔 SPFM 初代 | STC 8-bit | 自研 | `SPFM/FM塔 SPFM-初代硬件/` | 2022 |
+| IAP SPFM 二代 | STC 8-bit | 自研 | `SPFM/IAP SPFM-二代硬件改版/` | 2022 |
+| IAP-RESPFM 三代 | STC 8-bit (STC12C5A60S2) | 自研 | `SPFM/IAP-RESPFM-自制3代/` | 2023.11-12 |
+| STM32-RESPFM | STM32F103 | 自研 | `RE2-RESPFM/STM32-RESPFM/` | 2024.06-09 |
+| STM32 SPFM DIY 参考 | STM32F103 | 自研 | `reference/20240827_stm32f103_SPFM_DIY/` | 2024.08 |
+| PIC18F25K22-RESPFM | PIC18F25K22 | 自研 | `RE2-RESPFM/PIC18F25K22-RESPFM/` | 2024.12 |
+| **RPFM（当前）** | RP2350A | 自研 | `RPFM/` | 2026.05 |
 
 ## 经验总结
 
