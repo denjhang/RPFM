@@ -85,6 +85,33 @@ GPIO25:    LED        CPU 心跳
 GPIO16 WS2812 不参与，跳过。
 剩余 PIO 资源：PIO0 SM1-3, PIO1 SM0/SM2-3 可用于未来扩展。
 
+## GPIO 总分配表
+
+| GPIO | 用途 | 接口 |
+|------|------|------|
+| 0-7 | D0-D7 数据总线 | PIO0 SM0 → U1 74LVC245 → Bus Board |
+| 8 | WR# 写信号 | PIO0 SM0 → U2 74LVC245 → Bus Board |
+| 9 | RD# 读信号 | PIO0 SM0 → U2 + U1 DIR |
+| 10-13 | A0-A3 地址线 | PIO0 SM0 → U2 74LVC245 → Bus Board |
+| 14 | SPI1 SCK | SD 卡 |
+| 15 | SPI1 MOSI | SD 卡 |
+| 16 | WS2812 板载 | 不使用 |
+| 17 | CS0# | PIO1 SM1 → Bus Board |
+| 18 | CS1# | PIO1 SM1 → Bus Board |
+| 19 | CS2# | PIO1 SM1 → Bus Board |
+| 20 | CS3# | PIO1 SM1 → Bus Board |
+| 21 | IC# 复位 | PIO1 SM1 → Bus Board |
+| 22 | SPI0 SCK | ILI9341 |
+| 23 | SPI0 MOSI | ILI9341 |
+| 24 | SPI0 MISO | ILI9341 |
+| 25 | LED 心跳 | CPU |
+| 26 | ILI9341 DC | CPU |
+| 27 | ILI9341 RST | CPU |
+| 28 | ILI9341 CS | CPU |
+| 29 | 触摸屏 CS | CPU |
+| 30 | SPI1 MISO | SD 卡 |
+| 31 | SD 卡 CS | CPU |
+
 ## 74LVC245 双向缓冲器
 
 连接 RESPFM Bus Board 需要 2 片 74LVC245：
@@ -158,20 +185,33 @@ PC/MDPlayer
   ▼
 RP2350A (RPFM 主控)
   │
-  │ GPIO0-15 (PIO0 16-bit 并行)
-  │ GPIO17-19 (CPU: CS2#, CS3#, IC#)
-  │ GPIO16 (PIO1: WS2812)
-  │ GPIO25 (CPU: LED)
+  │ GPIO0-13 (PIO0 14-bit: D0-D7 + WR# + RD# + A0-A3)
+  │ GPIO17-21 (PIO1: CS0-CS3 + IC#)
+  │ GPIO22-24 (SPI0: ILI9341 数据)
+  │ GPIO26-28 (ILI9341 控制: DC, RST, CS)
+  │ GPIO29    (触摸屏 CS)
+  │ GPIO14-15,31 (SPI1: SD 卡)
+  │ GPIO16    (WS2812 板载，不用)
+  │ GPIO25    (LED 心跳)
   │
   ├─► U1 74LVC245 (D0-D7 双向缓冲)
   │     DIR ← RD#
   │
-  ├─► U2 74LVC245 (WR#,A0-A3,CS0#,CS1#,RD# 单向缓冲)
+  ├─► U2 74LVC245 (WR#, RD#, A0-A3 单向缓冲)
   │     DIR = 固定输出
   │
-  ├─► GPIO17 (CS2#) ──直接或缓冲──→ Bus Board
-  ├─► GPIO18 (CS3#) ──直接或缓冲──→ Bus Board
-  ├─► GPIO19 (IC#)  ──直接或缓冲──→ Bus Board
+  ├─► GPIO17 (CS0#) ──► Bus Board
+  ├─► GPIO18 (CS1#) ──► Bus Board
+  ├─► GPIO19 (CS2#) ──► Bus Board
+  ├─► GPIO20 (CS3#) ──► Bus Board
+  ├─► GPIO21 (IC#)  ──► Bus Board
+  │
+  ├─► SPI0: ILI9341 触摸屏
+  │     SCK=GPIO22, MOSI=GPIO23, MISO=GPIO24
+  │     DC=GPIO26, RST=GPIO27, CS_LCD=GPIO28, CS_TOUCH=GPIO29
+  │
+  ├─► SPI1: SD 卡
+  │     SCK=GPIO14, MOSI=GPIO15, MISO=GPIO30, CS_SD=GPIO31
   │
   ▼
 RESPFM Bus Board v0.7 (5V 总线)
