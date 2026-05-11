@@ -33,7 +33,7 @@ RPFM 作为 RE:Birth 主控板，通过 RESPFM Bus Board 连接所有 RE2 系列
 
 ## RP2350A 引脚分配
 
-### PIO0 SM0: GPIO0-15（16-bit 连续，写+读总线核心）
+### PIO0 SM0: GPIO0-13（14-bit 连续，数据+读写+地址）
 
 ```
 GPIO0:     D0        bit[0]    数据位0
@@ -45,34 +45,33 @@ GPIO5:     D5        bit[5]    数据位5
 GPIO6:     D6        bit[6]    数据位6
 GPIO7:     D7        bit[7]    数据位7
 GPIO8:     WR#       bit[8]    写信号（低有效）
-GPIO9:     A0        bit[9]    地址/数据选择
-GPIO10:    CS0#      bit[10]   片选0（低有效）
-GPIO11:    CS1#      bit[11]   片选1（低有效）
-GPIO12:    A1        bit[12]   地址线1
-GPIO13:    A2        bit[13]   地址线2
-GPIO14:    A3        bit[14]   地址线3
-GPIO15:    RD#       bit[15]   读信号（低有效）
+GPIO9:     RD#       bit[9]    读信号（低有效）
+GPIO10:    A0        bit[10]   地址线0
+GPIO11:    A1        bit[11]   地址线1
+GPIO12:    A2        bit[12]   地址线2
+GPIO13:    A3        bit[13]   地址线3
 ```
 
-`out pins, 16` 一次原子输出所有信号。
+`out pins, 14` 一次原子输出数据+读写+地址。
 
-### PIO1 SM1: GPIO17-19（辅助信号，非连续引脚）
+### GPIO16: 板载 WS2812（跳过）
 
-PIO1 不要求引脚连续（用 `set pins` / `set pindirs` 指令控制）：
+### PIO1 SM1: GPIO17-19（片选+复位，WS2812 之后）
 
 ```
-GPIO17:    CS2#                片选2（低有效）
-GPIO18:    CS3#                片选3（低有效）
-GPIO19:    IC#                 复位信号（低有效）
+GPIO17:    CS0#                片选0（低有效）
+GPIO18:    CS1#                片选1（低有效）
+GPIO19:    CS2#                片选2（低有效）
+GPIO20:    CS3#                片选3（低有效）
+GPIO21:    IC#                 复位信号（低有效）
 ```
 
-CS2#/CS3# 在切换芯片时调用一次 PIO `set` 即可。
-IC# 仅在复位时使用。
+PIO1 用 `set pins` 控制非连续引脚，切换芯片时调用一次。
 
 ### 固定引脚
 
 ```
-GPIO16:    WS2812     板载 RGB LED（不使用）
+GPIO16:    WS2812     板载 RGB LED（不使用，跳过）
 GPIO25:    LED        CPU 心跳
 ```
 
@@ -80,13 +79,11 @@ GPIO25:    LED        CPU 心跳
 
 | PIO | SM | 用途 | 引脚 |
 |-----|-----|------|------|
-| PIO0 | SM0 | 16-bit 总线 (D0-D7, WR#, RD#, A0-A3, CS0-CS1) | GPIO0-15 |
-| PIO1 | SM1 | CS2#, CS3#, IC# 辅助信号 | GPIO17-19 |
+| PIO0 | SM0 | 14-bit 数据+读写+地址 | GPIO0-13 |
+| PIO1 | SM1 | CS0-CS3 + IC# | GPIO17-21 |
 
-GPIO16 WS2812 不参与本项目，PIO1 SM0 空闲。
+GPIO16 WS2812 不参与，跳过。
 剩余 PIO 资源：PIO0 SM1-3, PIO1 SM0/SM2-3 可用于未来扩展。
-
-### GPIO25: 板载 LED（CPU 心跳）
 
 ## 74LVC245 双向缓冲器
 
@@ -118,21 +115,31 @@ DIR: 由 GPIO15 (RD#) 控制
   - GPIO15 通过 U2 输出到 Bus Board 的 RD#，同时连到 U1 的 DIR
 OE#: 接 GND（常使能）
 
-**U2: 74LVC245 — 控制信号单向输出（8-bit）**
+**U2: 74LVC245 — WR#/RD#/A0-A3 单向输出（6-bit，只用6通道）**
 
 | 74LVC245 通道 | RP2350A 侧 | Bus Board 侧 |
 |--------------|-----------|-------------|
 | B1/A1 | GPIO8 (WR#) | WR# |
-| B2/A2 | GPIO9 (A0) | A0 |
-| B3/A3 | GPIO10 (CS0#) | CS0# |
-| B4/A4 | GPIO11 (CS1#) | CS1# |
-| B5/A5 | GPIO12 (A1) | A1 |
-| B6/A6 | GPIO13 (A2) | A2 |
-| B7/A7 | GPIO14 (A3) | A3 |
-| B8/A8 | GPIO15 (RD#) | RD# |
+| B2/A2 | GPIO9 (RD#) | RD# |
+| B3/A3 | GPIO10 (A0) | A0 |
+| B4/A4 | GPIO11 (A1) | A1 |
+| B5/A5 | GPIO12 (A2) | A2 |
+| B6/A6 | GPIO13 (A3) | A3 |
+| B7/A7 | — (空) | — |
+| B8/A8 | — (空) | — |
 
 DIR: 接 GND（固定 B→A，RP2350A 输出方向）
 OE#: 接 GND（常使能）
+
+### U1 DIR 连接说明
+
+U1 (数据总线) 的 DIR 引脚由 RD# 控制：
+- GPIO9 (RD#) → U2 B2/A2 → Bus Board RD#
+- 同时 GPIO9 (RD#) → U1 DIR
+
+RD#=1 (写): U1 B→A，数据从 RP2350A 流向 Bus Board
+RD#=0 (读): U1 A→B，数据从 Bus Board 流向 RP2350A
+GPIO9 一个引脚同时驱动 U2 的 RD# 输出和 U1 的 DIR 方向。
 
 ### 电源
 
@@ -177,22 +184,22 @@ RESPFM Bus Board v0.7 (5V 总线)
   └── ...
 ```
 
-## PIO word 格式（16-bit）
+## PIO word 格式（14-bit）
 
 ```
 bit[7:0]   = D0-D7 数据
 bit[8]     = WR#    (1=空闲, 0=写脉冲)
-bit[9]     = A0     (0=地址, 1=数据)
-bit[10]    = CS0#   (1=未选, 0=选中)
-bit[11]    = CS1#   (1=未选, 0=选中)
-bit[12]    = A1
-bit[13]    = A2
-bit[14]    = A3
-bit[15]    = RD#    (1=空闲, 0=读)
+bit[9]     = RD#    (1=空闲, 0=读)
+bit[10]    = A0
+bit[11]    = A1
+bit[12]    = A2
+bit[13]    = A3
 ```
 
-空闲状态: D=0xFF, WR#=1, RD#=1, A0-A3=0, CS0#-CS1#=1
-`= 0x8300 | 0xFF = 0x83FF`
+空闲状态: D=0xFF, WR#=1, RD#=1, A0-A3=0
+`= 0x0300 | 0xFF = 0x03FF`
+
+CS0-CS3 由 PIO1 SM1 单独控制，不在 PIO0 的 14-bit word 内。
 
 ## 各芯片总线信号映射
 
