@@ -10,7 +10,7 @@
 ## 第一代：IAP-SPFM（2022）
 
 **硬件：** 自制 PCB，初代硬件
-**MCU：** STM32
+**MCU：** STC 8 位单片机（低成本方案）
 **协议：** SCCI 1.0
 
 初代 SPFM 硬件，奠定了整个项目的架构基础：
@@ -19,13 +19,13 @@
 - 多芯片片选复用数据总线
 
 ```
-PC ──USB CDC──→ STM32 ──GPIO bitbang──→ YM2413
+PC ──USB CDC──→ STC 8-bit ──GPIO bitbang──→ YM2413
 ```
 
 ## 第二代：IAP-RESPFM（2022）
 
 **硬件改版：** IAP SPFM 二代硬件、SPFM Light
-**MCU：** STM32
+**MCU：** STC 8 位单片机
 **源码路径：** `IAP SPFM-二代硬件改版/iap-src/main.c`（2022.12.10）
 
 硬件迭代，改进 PCB 设计和 USB 接口。
@@ -33,8 +33,8 @@ PC ──USB CDC──→ STM32 ──GPIO bitbang──→ YM2413
 ## 第三代：IAP-RESPFM TQFP64（2022）
 
 **硬件：** TQFP64 封装，自制三代
+**MCU：** STC 8 位单片机
 **源码路径：** `IAP-RESPFM-自制3代/TQFP64版本/SPFM(SV231207)/`
-**代码：** HAL 库 + 标准外设库
 
 三代硬件成型，PCB 进入可生产状态。SPFM 项目从实验原型转向产品化。
 
@@ -100,14 +100,14 @@ YMF288M2024.8.11.hex
 
 ### 关键技术突破
 
-| 对比项 | STM32-RESPFM | RPFM |
-|--------|-------------|------|
-| 总线驱动 | GPIO bitbang + nops.inc 汇编延时 | PIO 11-bit 原子输出 |
-| 时序精度 | 手动数时钟周期，中断会破坏时序 | PIO 8ns 分辨率，不受中断影响 |
-| USB 栈 | HAL USB CDC，调通耗时数周 | pico-sdk + TinyUSB 开箱即用 |
-| 协议解析 | 从零实现 SCCI | 直接移植 ym2151-rp2040 参考实现 |
-| 开发周期 | ~2个月达到完美驱动 OPLL | 几天出声 + 全并行总线 |
-| PCB 迭代 | 4版（v0.1 → v0.35） | 面包板验证中 |
+| 对比项 | IAP-SPFM (STC 8-bit) | STM32-RESPFM | RPFM |
+|--------|---------------------|-------------|------|
+| MCU | STC 8 位单片机 | STM32F103C8 | RP2350A |
+| 总线驱动 | GPIO bitbang | GPIO bitbang + nops.inc 汇编 | PIO 11-bit 原子输出 |
+| 时序精度 | 手动延时 | 手动数时钟周期，中断会破坏时序 | PIO 8ns 分辨率，不受中断影响 |
+| USB 栈 | — | HAL USB CDC，调通耗时数周 | pico-sdk + TinyUSB 开箱即用 |
+| 协议解析 | 从零实现 SCCI | 从零实现 SCCI | 直接移植 ym2151-rp2040 参考实现 |
+| 开发周期 | 数月 | ~2个月达到完美驱动 OPLL | 几天出声 + 全并行总线 |
 
 ### 开发时间线
 
@@ -124,15 +124,15 @@ YMF288M2024.8.11.hex
 
 ## 项目源码位置索引
 
-| 项目 | 路径 | 时间 |
-|------|------|------|
-| FM塔 SPFM 初代 | `SPFM/FM塔 SPFM-初代硬件/` | 2022 |
-| IAP SPFM 二代 | `SPFM/IAP SPFM-二代硬件改版/` | 2022 |
-| IAP-RESPFM 三代 | `SPFM/IAP-RESPFM-自制3代/TQFP64/` | 2022 |
-| STM32-RESPFM | `RE2-RESPFM/STM32-RESPFM/` | 2024.06-09 |
-| STM32 SPFM DIY 参考 | `reference/20240827_stm32f103_SPFM_DIY/` | 2024.08 |
-| PIC18F 尝试 | `RE2-RESPFM/PIC18F25K22-RESPFM/` | 2024.12 |
-| **RPFM（当前）** | `RPFM/` | 2026.05 |
+| 项目 | MCU | 路径 | 时间 |
+|------|-----|------|------|
+| FM塔 SPFM 初代 | STC 8-bit | `SPFM/FM塔 SPFM-初代硬件/` | 2022 |
+| IAP SPFM 二代 | STC 8-bit | `SPFM/IAP SPFM-二代硬件改版/` | 2022 |
+| IAP-RESPFM 三代 | STC 8-bit | `SPFM/IAP-RESPFM-自制3代/TQFP64/` | 2022 |
+| STM32-RESPFM | STM32F103 | `RE2-RESPFM/STM32-RESPFM/` | 2024.06-09 |
+| STM32 SPFM DIY 参考 | STM32F103 | `reference/20240827_stm32f103_SPFM_DIY/` | 2024.08 |
+| PIC18F 尝试 | PIC18F25K22 | `RE2-RESPFM/PIC18F25K22-RESPFM/` | 2024.12 |
+| **RPFM（当前）** | RP2350A | `RPFM/` | 2026.05 |
 
 ## 经验总结
 
