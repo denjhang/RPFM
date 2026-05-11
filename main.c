@@ -48,7 +48,7 @@
 
 static PIO s_pio = pio0;
 static uint s_sm = 0;
-static bool s_use_pio = false;
+static bool s_use_pio = true;
 
 // ========== Bitbang YM2413 Driver (fallback for debugging) ==========
 
@@ -83,9 +83,13 @@ void ym2413_write_reg_bitbang(uint8_t reg, uint8_t data) {
 // ========== PIO YM2413 Driver ==========
 
 static void pio_ym2413_init(void) {
+    printf("  PIO: adding program...\n");
     uint offset = pio_add_program(s_pio, &ym2413_write_program);
+    printf("  PIO: program loaded at offset %u\n", offset);
     s_sm = pio_claim_unused_sm(s_pio, true);
+    printf("  PIO: claimed SM %u\n", s_sm);
     ym2413_write_program_init(s_pio, s_sm, offset, PIN_BUS_BASE);
+    printf("  PIO: SM initialized, enabled\n");
 }
 
 void ym2413_write_reg_pio(uint8_t reg, uint8_t data) {
@@ -266,11 +270,15 @@ int main() {
     printf("Initializing GPIO...\n");
     gpio_init_all();
 
-    // Initialize data bus + WR# pins (needed for both PIO and bitbang)
-    for (int i = PIN_BUS_BASE; i < PIN_BUS_BASE + 9; i++) {
-        gpio_init(i);
-        gpio_set_dir(i, GPIO_OUT);
-        gpio_put(i, 0);
+    // Initialize data bus + WR# pins
+    // PIO mode: these pins are initialized by pio_ym2413_init() - do NOT re-init here
+    // Bitbang mode: we need to init them as GPIO outputs
+    if (!s_use_pio) {
+        for (int i = PIN_BUS_BASE; i < PIN_BUS_BASE + 9; i++) {
+            gpio_init(i);
+            gpio_set_dir(i, GPIO_OUT);
+            gpio_put(i, 0);
+        }
     }
 
     if (s_use_pio) {

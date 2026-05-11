@@ -4,27 +4,17 @@
 ;   GPIO[base+0] to GPIO[base+7]: D0-D7 data bus
 ;   GPIO[base+8]: WR# (write strobe, active low, bit8=1 idle, bit8=0 active)
 ;
-; A0, CS#, IC# are controlled by the CPU (not PIO).
+; A0, CS# are controlled by the CPU (not PIO).
 ;
-; One PIO "write phase" = one 32-bit word = one WR# pulse cycle:
-;   CPU sets A0 (0 or 1) and CS# (low) before pushing
-;   PIO pulls word, outputs data with WR# pulse, done
-;   CPU sets CS# (high) after PIO completes
+; Timing: PIO outputs one WR# pulse per 32-bit word. The C side controls
+; inter-signal timing with busy_wait_us_32() to match MegaGRRL timing:
+;   20us between each signal change (A0, CS#, data, WR#)
 ;
 ; 32-bit word format (packed by C helper):
 ;   bits [8:0]   = D0-D7 data + WR#=1 (setup, WR idle high)
 ;   bits [17:9]  = D0-D7 data + WR#=0 (WR pulse active low)
 ;   bits [26:18] = D0-D7 data + WR#=1 (WR release, data hold)
 ;   bits [31:27] = unused
-;
-; At 125 MHz (Pico 2 default): each cycle = 8ns
-;   Setup:    16 cycles = 128ns (datasheet min 100ns)
-;   WR# low:  32 cycles = 256ns (datasheet min 200ns)
-;   Hold:     16 cycles = 128ns (datasheet min 100ns)
-;
-; Reference: MegaGRRL Driver_FmOutopll() uses 20us delays between
-; signal changes (limited by SPI shift register). PIO direct drive
-; is 100x faster while still meeting all datasheet timing minimums.
 
 .program ym2413_write
 
@@ -32,16 +22,15 @@
 
     ; Setup: D=data, WR#=1
     out pins, 9                 ; bits[8:0] -> D0-D7, WR#=1
-    nop [14]                    ; setup: 15 cycles = 120ns
+    nop [5]                     ; setup hold: 6 cycles = 48ns
 
     ; WR# pulse: D=data, WR#=0
     out pins, 9                 ; bits[17:9] -> D0-D7, WR#=0
-    nop [14]                    ; WR# low hold: 15 cycles
-    nop [14]                    ; total WR# low: 30 cycles = 240ns
+    nop [5]                     ; WR# low: 6 cycles = 48ns
 
     ; WR# release: D=data, WR#=1
     out pins, 9                 ; bits[26:18] -> D0-D7, WR#=1
-    nop [14]                    ; data hold: 15 cycles = 120ns
+    nop [5]                     ; data hold: 6 cycles = 48ns
 
 % c-sdk {
 static inline void ym2413_write_program_init(PIO pio, uint sm, uint offset, uint base_pin) {
@@ -55,7 +44,6 @@ static inline void ym2413_write_program_init(PIO pio, uint sm, uint offset, uint
         pio_gpio_init(pio, base_pin + i);
     }
     pio_sm_set_consecutive_pindirs(pio, sm, base_pin, 9, true);
-    // Set initial pin states: data=0, WR#=1 (idle high, WR inactive)
     pio_sm_set_pins_with_mask(pio, sm, (1u << 8) << base_pin, ((1u << 9) - 1) << base_pin);
 
     pio_sm_init(pio, sm, offset, &c);
@@ -73,15 +61,27 @@ static inline void pio_write_phase(PIO pio, uint sm, uint8_t data_val) {
     while (!pio_sm_is_tx_fifo_empty(pio, sm)) {}
 }
 
+// YM2413 write following MegaGRRL Driver_FmOutopll() timing:
+//   20us between each signal change
 static inline void ym2413_pio_write_reg(PIO pio, uint sm,
                                          uint pin_a0, uint pin_cs,
                                          uint8_t reg, uint8_t data) {
-    gpio_put(pin_cs, 0);
+    // A0 = 0 (address phase)
     gpio_put(pin_a0, 0);
+    busy_wait_us_32(20);
+
+    // CS# low, put address on data bus
+    gpio_put(pin_cs, 0);
     pio_write_phase(pio, sm, reg);
-    busy_wait_us_32(1);
+    busy_wait_us_32(20);
+
+    // A0 = 1 (data phase), put data on data bus
     gpio_put(pin_a0, 1);
     pio_write_phase(pio, sm, data);
+    busy_wait_us_32(20);
+
+    // CS# high
     gpio_put(pin_cs, 1);
+    busy_wait_us_32(20);
 }
 %}

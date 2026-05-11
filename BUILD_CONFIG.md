@@ -217,9 +217,50 @@ cp -r ../../tinyusb-0.20.0 tinyusb  # 复制新版
 gcc -o rpfm_monitor.exe rpfm_monitor.c -mwindows -lsetupapi
 ```
 
-## 10. 已知限制
+## 10. PIO 驱动
 
-- PIO 驱动尚未调通（bitbang 驱动已验证可正常发声）
+### 10.1 架构
+
+PIO 控制 9 个连续引脚（GPIO0-8）：D0-D7 数据总线 + WR# 写信号。CPU 控制 A0、CS#、IC#。
+
+PIO 程序每次从 TX FIFO pull 一个 32-bit word，输出一个完整的 WR# 脉冲周期（setup → WR low → WR release）。C 侧通过 `busy_wait_us_32()` 控制信号间隔。
+
+### 10.2 时序
+
+参考 MegaGRRL `Driver_FmOutopll()` 的精确时序（CPU 240MHz，每次信号变化 20µs）：
+
+```
+A0 = 0           ; 地址阶段开始
+sleep(20µs)
+CS# = low
+DATABUS = Register
+sleep(20µs)
+WR# = low
+sleep(20µs)
+WR# = high
+sleep(20µs)
+A0 = 1           ; 数据阶段开始
+WR# = low
+DATABUS = Value
+sleep(20µs)
+WR# = high
+CS# = high
+sleep(20µs)
+```
+
+PIO 内部 WR# 脉冲：setup 48ns + WR low 48ns + hold 48ns（远超 datasheet 最小值）。
+C 侧 `busy_wait_us_32(20)` 控制各信号间隔。
+
+### 10.3 踩坑：GPIO 初始化顺序
+
+PIO 模式下，`pio_ym2413_init()` 将 GPIO0-8 切换到 PIO 控制。如果之后用 `gpio_init()` 重新初始化这些引脚，会把它们切回 GPIO 模式，PIO 的输出不会反映到物理引脚上。
+
+**解决**：PIO 模式下跳过 GPIO0-8 的 `gpio_init()` 循环。
+
+## 11. 已知限制
+
+- 频率表可能有错误（待验证和修复）
+- 节奏通道未测试
 - 只在 MSYS2 mingw64 环境下验证通过，Windows CMD + Pico 官方 cmake 未测试
 - 每次 `cmake` 后都需要执行 sed 路径修复
 - SDK 2.2.0 内置 TinyUSB 在 RP2350 上会崩溃，已替换为 tinyusb-0.20.0（`pico-sdk-2.2.0/lib/tinyusb_backup` 是原版备份）
