@@ -165,6 +165,49 @@ YMF288M2024.8.11.hex
 2026.05.12  PIO 全并行总线：A0/CS0# 纳入 PIO（GPIO0-10）
 ```
 
+## RE2 声卡模块板系列
+
+自研的 RE2 系列声卡模块板，每块对应一颗或一组音源芯片，通过 SPFM 总线与主控板连接。
+所有模块板共享统一的 RE2 Bus Board 背板接口。
+
+**路径：** `自制模块板/`
+
+| 模块板 | 芯片 | 说明 |
+|--------|------|------|
+| RE2-YM2151 | YM2151 (OPM) | 8 通道 FM |
+| RE2-YM2203 | YM2203 (OPN) | 3 FM + 3 SSG |
+| RE2-YM2413 | YM2413 (OPLL) | 9 通道旋律 + 5 节奏 |
+| RE2-YM2608 | YM2608 (OPNA) | 6 FM + 3 SSG + ADPCM |
+| RE2-YM2612-3438 | YM2612 (OPN2) | 6 FM + DAC |
+| RE2-YM3812_3526 | YM3812 (OPLL2) | 双 OPLL |
+| RE2-YMF262 | YMF262 (OPL3) | 4 算子 FM |
+| RE2-YMF276-288-289 | YMF288 (OPN3L) | YM2608 兼容 |
+| RE2-YMF297 | YMF297 (OPL4) | OPL3 + 波形表 |
+| RE2-Y8950 | Y8950 (MSX-AUDIO) | OPL1 + ADPCM |
+| RE2-AY8910-YMZ284 | AY-3-8910 / YMZ284 | PSG 方波音源 |
+| RE2-SN76489 | SN76489 | PSG 方波音源 |
+| RE2-SAA1099 | SAA1099 | 双声道方波 |
+| RE2-2xYM3812 | 2×YM3812 | 双 OPLL |
+| RE2-AYB03 | 2×OPLL + SSG | 复合音源 |
+| RE2-NBV5 | 2×OPM + SSG | 复合音源 |
+| RE2-YM2163 | YM2163 (OPP) | 雅马哈键盘音源 |
+| RE2-YM3302 | YM3302 | 稀有芯片 |
+| RE2-YM3427 | YM3427 | 稀有芯片 |
+| RE2-YM3806 | YM3806 | 稀有芯片 |
+| RE2-YM7129 | YM7129 | 空间处理器 |
+| RE2-YMU762 | YMU762 | 手机音源 |
+| RE2-YMZ261-285 | YMZ261 / YMZ285 | 稀有芯片 |
+| RE2-YMZ280B | YMZ280B | PCM 音源 |
+| RE2-YMZ284-294 | YMZ284 / YMZ294 | PSG 变体 |
+| RE2-i8253 | Intel 8253 | 可编程定时器 |
+| RE2-TLC7524 | TLC7524 | DAC |
+| RE2-NRTBD | — | 定制模块 |
+| RE2-SDQ1 | — | 定制模块 |
+| RE2-M208B1 | — | 定制模块 |
+| RE2-SPFM Tower | — | SPFM 塔式扩展 |
+| RE2-SPFM_Light | — | SPFM Light 兼容板 |
+| PS98-YM2610 | YM2610 (NeoGeo) | NeoGeo 音源 |
+
 ## 项目源码位置索引
 
 | 项目 | MCU | 性质 | 路径 | 时间 |
