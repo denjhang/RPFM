@@ -386,6 +386,7 @@ int main() {
     uint8_t scci_slot = 0;
     uint8_t scci_cmd = 0;
     uint8_t scci_a = 0;
+    uint8_t scci_addr = 0;
 
     // LED heartbeat
     bool led_state = false;
@@ -440,7 +441,7 @@ int main() {
         }
         else if (scci_parse_idx == 2) {
             if (scci_cmd == 0x00) {
-                ym2413_write_reg(scci_a & 0xFE, uart_data);
+                scci_addr = uart_data;  // cache register address
                 scci_parse_idx = 3;
             } else if (scci_cmd == 0x80) {
                 ym2413_write_reg(scci_a, uart_data);
@@ -453,7 +454,7 @@ int main() {
         }
         else if (scci_parse_idx == 3) {
             if (scci_cmd == 0x00) {
-                ym2413_write_reg(scci_a | 0x01, uart_data);
+                ym2413_write_reg(scci_addr, uart_data);
             }
             scci_parse_idx = 0;
         }
