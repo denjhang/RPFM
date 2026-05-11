@@ -261,19 +261,24 @@ static BOOL open_serial(void) {
 
     const char *port = get_selected_port();
     if (!port) {
-        MessageBoxA(hMainWnd, "No COM port selected", "Error", MB_ICONERROR);
+        refresh_port_combo();
+        MessageBoxA(hMainWnd, "No COM port found.\nRescanned ports.", "Error", MB_ICONERROR);
         return FALSE;
     }
 
     char fullPort[64];
     snprintf(fullPort, sizeof(fullPort), "\\\\.\\%s", port);
 
-    hSerial = CreateFileA(fullPort, GENERIC_READ, 0, NULL, OPEN_EXISTING,
+    hSerial = CreateFileA(fullPort, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING,
                           FILE_FLAG_OVERLAPPED, NULL);
     if (hSerial == INVALID_HANDLE_VALUE) {
-        char msg[128];
-        snprintf(msg, sizeof(msg), "Cannot open %s\nError: %lu", port, GetLastError());
+        DWORD err = GetLastError();
+        char msg[256];
+        snprintf(msg, sizeof(msg),
+                 "Cannot open %s\nPath: %s\nError: %lu",
+                 port, fullPort, err);
         MessageBoxA(hMainWnd, msg, "Error", MB_ICONERROR);
+        refresh_port_combo();
         return FALSE;
     }
 

@@ -158,13 +158,56 @@ pico_enable_stdio_uart(target 0)
 
 参考了官方 `hello_usb` 示例（pico-examples/hello_world/usb/）。
 
-### 9.2 为什么之前认为 USB CDC 不兼容？
+### 9.2 USB CDC 调试历程（踩坑记录）
 
-调试过程中曾尝试手动链接 `tinyusb_device`，导致固件"死机"（`stdio_init_all()` 永久挂起），误判为 TinyUSB 不兼容 RP2350。
+#### 坑 1：手动链接 tinyusb_device 导致 CDC 不启用
 
-**根因**：手动 `target_link_libraries(... tinyusb_device)` 会使 SDK 设置 `LIB_TINYUSB_DEVICE` 标志。`pico_stdio_usb` 检测到该标志后，跳过自己的 TinyUSB 配置（包括定义 `CFG_TUD_CDC=1`）。结果 TinyUSB 被编译进去了，但 CDC 类未启用，USB 枚举后没有 CDC 接口，`stdio_init_all()` 等待 CDC 就绪就永远挂住。
+**现象**：固件"死机"（`stdio_init_all()` 永久挂起），LED 在快闪后常亮，USB 设备被 Windows 识别但没有 COM 口。
 
-**结论**：TinyUSB 完全兼容 RP2350。错误在于多此一举手动链接，打乱了 SDK 内部的配置顺序。正确做法是只链接 `pico_stdlib`，让 `pico_enable_stdio_usb()` 内部处理所有事情。
+**根因**：手动 `target_link_libraries(... tinyusb_device)` 使 SDK 设置 `LIB_TINYUSB_DEVICE` 标志。`pico_stdio_usb/include/tusb_config.h` 中有条件判断：
+
+```c
+#if !defined(LIB_TINYUSB_HOST) && !defined(LIB_TINYUSB_DEVICE)
+#define CFG_TUD_CDC  (1)  // 只有这里才会启用 CDC
+#endif
+```
+
+`LIB_TINYUSB_DEVICE` 被定义后，`CFG_TUD_CDC` 不会被定义，CDC 类未启用，USB 描述符里没有 CDC 接口。`stdio_usb_init()` 走到 `#warning` 分支直接返回 false。
+
+**解决**：不手动链接 `tinyusb_device`，让 `pico_enable_stdio_usb()` 内部处理。
+
+#### 坑 2：SDK 2.2.0 内置 TinyUSB 在 RP2350 上 tusb_init() 崩溃
+
+**现象**：使用正确的 hello_usb 模式（不手动链接），固件仍然在 `stdio_init_all()` 中卡死，LED 3 次快闪后常亮。
+
+**排查过程**：
+1. 编译标志中没有 `LIB_TINYUSB_DEVICE`，`LIB_PICO_STDIO_USB=1`，`pico_stdio_usb/include` 在 include 路径中
+2. 编译无 warning（说明 `CFG_TUD_CDC` 被正确定义）
+3. Debug 模式编译同样崩溃（排除了 Release 特有的优化 bug）
+4. 跳过 `stdio_init_all()` 直接调用 `tusb_init()` 也会崩溃
+5. 使用 `tinyusb_device`（触发 `LIB_TINYUSB_DEVICE`）后 `stdio_usb_init()` 返回 false 不调用 `tusb_init()`，固件能运行但不发 USB
+
+**根因**：SDK 2.2.0 内置的 TinyUSB 版本在 RP2350 上调用 `tusb_init()` 时触发 HardFault（`TU_ASSERT` 失败 → `bkpt` 指令）。这与 TinyUSB GitHub Issue #3491 / #3495 报告的问题一致：RP2350 的 USB 控制器在 TinyUSB 初始化时存在兼容性问题。
+
+**解决**：用 TinyUSB 0.20.0 替换 SDK 2.2.0 内置的 TinyUSB：
+
+```bash
+cd pico-sdk-2.2.0/lib
+mv tinyusb tinyusb_backup       # 备份原版
+cp -r ../../tinyusb-0.20.0 tinyusb  # 复制新版
+```
+
+替换后 hello_usb 模式立即工作，`printf()` 输出通过 USB CDC 正常传输。
+
+#### 坑 3：rpfm_monitor 打开 COM 口失败 error 2
+
+**现象**：`CreateFileA("\\\\.\\COM10", ...)` 返回 error 2 (`ERROR_FILE_NOT_FOUND`)。
+
+**根因 1**：固件没启动成功时 COM 口会短暂出现然后消失，此时打开已消失的 COM 口会 error 2。
+
+**根因 2**：`CreateFileA` 只用了 `GENERIC_READ`，USB CDC 设备通常要求读写权限。
+
+**解决**：改为 `GENERIC_READ | GENERIC_WRITE`，错误时自动重新扫描端口列表。
 
 ### 9.3 串口监视器
 
@@ -179,3 +222,4 @@ gcc -o rpfm_monitor.exe rpfm_monitor.c -mwindows -lsetupapi
 - PIO 驱动尚未调通（bitbang 驱动已验证可正常发声）
 - 只在 MSYS2 mingw64 环境下验证通过，Windows CMD + Pico 官方 cmake 未测试
 - 每次 `cmake` 后都需要执行 sed 路径修复
+- SDK 2.2.0 内置 TinyUSB 在 RP2350 上会崩溃，已替换为 tinyusb-0.20.0（`pico-sdk-2.2.0/lib/tinyusb_backup` 是原版备份）
