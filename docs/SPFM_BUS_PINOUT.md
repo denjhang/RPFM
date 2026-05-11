@@ -254,6 +254,185 @@ CS0-CS3 由 PIO1 SM1 单独控制，不在 PIO0 的 14-bit word 内。
 
 ## 后续扩展
 
-- CS2#/CS3# 如需原子化可改用 PIO1 SM1 控制
 - SN76489 写入需要 18µs WR# 低电平保持，可在 PIO 程序中用 nop 延时
 - YM2612 DAC 模式需要连续数据流，可能需要 DMA + PIO 配合
+
+## 外设配置方案
+
+### ILI9341 触摸屏（SPI0）
+
+**CMakeLists.txt 启用：**
+```cmake
+# 已有
+target_link_libraries(rpfm_ym2413_test PRIVATE
+    pico_stdlib
+    hardware_gpio
+    hardware_pio
+    hardware_spi
+)
+```
+
+**初始化代码：**
+```c
+#include "hardware/spi.h"
+
+// SPI0 引脚定义
+#define PIN_LCD_SCK     22
+#define PIN_LCD_MOSI    23
+#define PIN_LCD_MISO    24
+#define PIN_LCD_DC      26
+#define PIN_LCD_RST     27
+#define PIN_LCD_CS      28
+#define PIN_LCD_BL      25  // 复用 LED 或另选
+
+// 初始化 SPI0 (ILI9341)
+void lcd_spi_init(void) {
+    spi_init(spi0, 40 * 1000 * 1000);  // ILI9341 最大 40MHz
+    spi_set_format(spi0, 8, SPI_CPOL_0, SPI_CPHA_0, SPI_MSB_FIRST);
+
+    gpio_init(PIN_LCD_SCK);
+    gpio_set_function(PIN_LCD_SCK, GPIO_FUNC_SPI);
+    gpio_init(PIN_LCD_MOSI);
+    gpio_set_function(PIN_LCD_MOSI, GPIO_FUNC_SPI);
+    gpio_init(PIN_LCD_MISO);
+    gpio_set_function(PIN_LCD_MISO, GPIO_FUNC_SPI);
+
+    gpio_init(PIN_LCD_DC);
+    gpio_set_dir(PIN_LCD_DC, GPIO_OUT);
+    gpio_put(PIN_LCD_DC, 0);
+
+    gpio_init(PIN_LCD_RST);
+    gpio_set_dir(PIN_LCD_RST, GPIO_OUT);
+    gpio_put(PIN_LCD_RST, 1);
+
+    gpio_init(PIN_LCD_CS);
+    gpio_set_dir(PIN_LCD_CS, GPIO_OUT);
+    gpio_put(PIN_LCD_CS, 1);
+}
+```
+
+**注意事项：**
+- SPI0 的 MOSI (GPIO23) 默认被 pico-sdk 的 flash XIP 占用，需要确认不影响启动
+- RP2350A 的 flash XIP 使用 QSPI (GPIO0-3 或其他引脚组)，SPI0 不冲突
+- 背光控制：PWM 或 GPIO 直接控制
+
+### SD 卡（SPI1）
+
+**CMakeLists.txt 添加 SDIO/SPI FATFS 支持：**
+```cmake
+# 方案 A：用 pico-sdk 内置的 SPI
+# 不需要额外库，直接用 hardware_spi
+
+# 方案 B：使用 SdFat / FatFs 库
+# 需要在 CMakeLists.txt 中添加第三方库
+```
+
+**初始化代码：**
+```c
+// SPI1 引脚定义
+#define PIN_SD_SCK      14
+#define PIN_SD_MOSI     15
+#define PIN_SD_MISO     30
+#define PIN_SD_CS       31
+
+// 初始化 SPI1 (SD 卡)
+void sd_spi_init(void) {
+    spi_init(spi1, 25 * 1000 * 1000);  // SD 卡初始化用 400kHz，后续可提频
+    spi_set_format(spi1, 8, SPI_CPOL_0, SPI_CPHA_0, SPI_MSB_FIRST);
+
+    gpio_init(PIN_SD_SCK);
+    gpio_set_function(PIN_SD_SCK, GPIO_FUNC_SPI);
+    gpio_init(PIN_SD_MOSI);
+    gpio_set_function(PIN_SD_MOSI, GPIO_FUNC_SPI);
+    gpio_init(PIN_SD_MISO);
+    gpio_set_function(PIN_SD_MISO, GPIO_FUNC_SPI);
+
+    gpio_init(PIN_SD_CS);
+    gpio_set_dir(PIN_SD_CS, GPIO_OUT);
+    gpio_put(PIN_SD_CS, 1);
+}
+```
+
+**SD 卡初始化流程：**
+1. 发送 80 个时钟脉冲（CS 高电平）
+2. 拉低 CS，发送 CMD0 (GO_IDLE_STATE)
+3. 发送 CMD8 (SEND_IF_COND) 检查 SDHC 支持
+4. 发送 CMD55 + ACMD41 (SD_SEND_OP_COND) 等待就绪
+5. 发送 CMD58 (READ_OCR) 获取电压范围
+6. 提速到 25MHz
+7. 切换到 FAT 文件系统
+
+### 触摸屏（GPIO29）
+
+触摸屏 (如 XPT2046) 通过 SPI0 共享总线，用独立的 CS 引脚。
+
+```c
+#define PIN_TOUCH_CS  29
+
+// 触摸屏用 SPI0，与 ILI9341 共享 SCK/MOSI/MISO
+// 仅 CS 不同
+uint16_t touch_read(uint8_t cmd) {
+    gpio_put(PIN_TOUCH_CS, 0);
+    uint8_t tx = cmd;
+    uint8_t rx;
+    spi_write_blocking(spi0, &tx, 1);
+    spi_read_blocking(spi0, &rx, 1);
+    gpio_put(PIN_TOUCH_CS, 1);
+    return rx;
+}
+```
+
+**注意：** ILI9341 和触摸屏共用 SPI0 时，需确保不会同时操作（互斥）。
+
+### PIO1 SM1: CS0-CS3 + IC# 辅助信号
+
+```c
+// 初始化 PIO1 SM1
+void pio_cs_init(void) {
+    PIO pio = pio1;
+    uint sm = pio_claim_unused_sm(pio, true);
+
+    // 设置 GPIO17-21 为输出，初始状态：CS 全高（未选），IC# 高（未复位）
+    for (int i = 17; i <= 21; i++) {
+        pio_gpio_init(pio, i);
+        gpio_set_dir(i, GPIO_OUT);
+        gpio_put(i, 1);  // CS#=1, IC#=1
+    }
+}
+
+// 选择芯片
+void cs_select(uint8_t chip) {
+    // chip: 0=CS0#, 1=CS1#, 2=CS2#, 3=CS3#
+    gpio_put(17 + chip, 0);
+}
+
+// 取消所有选择
+void cs_deselect_all(void) {
+    for (int i = 17; i <= 20; i++) {
+        gpio_put(i, 1);
+    }
+}
+
+// 复位
+void ic_reset(void) {
+    gpio_put(21, 0);
+    sleep_ms(1);
+    gpio_put(21, 1);
+    sleep_ms(10);
+}
+```
+
+### 初始化顺序
+
+```
+1. stdio_init_all()           — USB CDC
+2. lcd_spi_init()             — SPI0 + ILI9341 GPIO
+3. sd_spi_init()              — SPI1 + SD 卡 GPIO
+4. pio_ym2413_init()          — PIO0 总线
+5. pio_cs_init()              — PIO1 CS + IC#
+6. ILI9341 复位 + 初始化命令
+7. SD 卡初始化 + FATFS 挂载
+8. 触摸屏校准
+9. ym2413_reset() + mute_all()
+10. 进入主循环
+```
