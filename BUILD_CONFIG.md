@@ -257,10 +257,38 @@ PIO 模式下，`pio_ym2413_init()` 将 GPIO0-8 切换到 PIO 控制。如果之
 
 **解决**：PIO 模式下跳过 GPIO0-8 的 `gpio_init()` 循环。
 
-## 11. 已知限制
+## 11. USB CDC 串口命令（BOOTSEL）
+
+固件支持通过 USB CDC 接收串口命令，发送 `BOOTSEL\r\n` 即可让 RP2350A 进入 BOOTSEL 模式，无需手动按按钮。
+
+### 11.1 实现原理
+
+`check_serial_command()` 在每个音符播放间隙（约 370ms）调用 `getchar_timeout_us(0)` 检查 CDC 输入。收到完整行后比对命令字符串，匹配 "BOOTSEL" 则调用 `rom_reset_usb_boot(0, 0)` 进入 BOOTSEL 模式。
+
+### 11.2 关键：轮询频率
+
+必须在音频播放循环（`play_melody`、`play_scale` 等）内部调用 `check_serial_command()`。如果只在主循环外层调用，一个旋律周期约 17 秒内都无法响应串口输入。
+
+## 12. 自动烧录脚本
+
+`flash.sh` 实现全自动烧录，无需手动按 BOOTSEL 按钮：
+
+1. 通过 USB CDC 持续发送 `BOOTSEL` 命令直到 COM 口消失
+2. 轮询磁盘直到 RP2350 盘符出现
+3. 复制 UF2 文件到盘符完成烧录
+
+```bash
+bash flash.sh                          # 默认 COM10 + build/rpfm_ym2413_test.uf2
+bash flash.sh COM10 build/rpfm_ym2413_test.uf2  # 自定义
+```
+
+依赖：MSYS2 `python3` + `pyserial`（`pacman -S mingw-w64-x86_64-python-pyserial`）。
+
+## 13. 已知限制
 
 - 频率表可能有错误（待验证和修复）
 - 节奏通道未测试
 - 只在 MSYS2 mingw64 环境下验证通过，Windows CMD + Pico 官方 cmake 未测试
 - 每次 `cmake` 后都需要执行 sed 路径修复
 - SDK 2.2.0 内置 TinyUSB 在 RP2350 上会崩溃，已替换为 tinyusb-0.20.0（`pico-sdk-2.2.0/lib/tinyusb_backup` 是原版备份）
+- 自动烧录依赖 pyserial（MSYS2: `pacman -S mingw-w64-x86_64-python-pyserial`）

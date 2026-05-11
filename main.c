@@ -19,10 +19,12 @@
  */
 
 #include <stdio.h>
+#include <string.h>
 #include <math.h>
 #include "pico/stdlib.h"
 #include "hardware/gpio.h"
 #include "hardware/pio.h"
+#include "pico/bootrom.h"
 #include "ym2413.pio.h"
 
 // ========== Pin Definitions ==========
@@ -159,6 +161,27 @@ static void ym2413_note_off(uint8_t channel) {
     ym2413_write_reg(0x20 + channel, 0x00);
 }
 
+// ========== Serial Command ==========
+
+static char s_cmd_buf[32];
+static int s_cmd_pos = 0;
+
+static bool check_serial_command(void) {
+    int ch = getchar_timeout_us(0);
+    if (ch == PICO_ERROR_TIMEOUT) return false;
+    if (ch == '\r' || ch == '\n') {
+        s_cmd_buf[s_cmd_pos] = '\0';
+        if (strcmp(s_cmd_buf, "BOOTSEL") == 0) {
+            printf("Entering BOOTSEL mode...\n");
+            rom_reset_usb_boot(0, 0);
+        }
+        s_cmd_pos = 0;
+    } else if (s_cmd_pos < (int)sizeof(s_cmd_buf) - 1) {
+        s_cmd_buf[s_cmd_pos++] = (char)ch;
+    }
+    return true;
+}
+
 // ========== Demo Melodies ==========
 
 static const uint8_t melody_notes[] = {
@@ -191,6 +214,7 @@ static void play_melody(void) {
             ym2413_note_off(0);
             sleep_ms(20);
         }
+        check_serial_command();
     }
 }
 
@@ -200,6 +224,7 @@ static void play_test_tone(void) {
     sleep_ms(2000);
     ym2413_note_off(0);
     sleep_ms(500);
+    check_serial_command();
 }
 
 static void play_scale(void) {
@@ -210,8 +235,60 @@ static void play_scale(void) {
         sleep_ms(400);
         ym2413_note_off(0);
         sleep_ms(30);
+        check_serial_command();
     }
     sleep_ms(500);
+}
+
+static void play_rhythm_demo(void) {
+    /*
+     * YM2413 rhythm channels (register 0x0E):
+     *   bit 5: rhythm enable (1=on)
+     *   bit 4: Hi-Hat
+     *   bit 3: Top Cymbal / Top Tom
+     *   bit 2: Tom Tom
+     *   bit 1: Snare Drum
+     *   bit 0: Bass Drum
+     *
+     * When rhythm is enabled, melodic channels 6-8 become
+     * rhythm sound channels. Rhythm sounds use custom instruments.
+     *
+     * Rhythm volume: register 0x37 low nibble controls
+     * HiHat/TopCym/TomTom volume.
+     * Register 0x38 low nibble controls Snare/Bass volume.
+     */
+    static const char *rhythm_names[] = {
+        "Bass Drum", "Snare Drum", "Tom Tom", "Top Cym", "Hi-Hat"
+    };
+
+    // Enable rhythm mode with all bits
+    ym2413_write_reg(0x0E, 0x3F);
+    sleep_ms(100);
+
+    // Set rhythm volume (0x37, 0x38) - max volume (0x00)
+    ym2413_write_reg(0x37, 0x00);
+    ym2413_write_reg(0x38, 0x00);
+    sleep_ms(100);
+
+    // Play each rhythm sound one at a time
+    for (int i = 0; i < 5; i++) {
+        uint8_t bit = (i == 4) ? 0x10 : (i == 3) ? 0x04 : (i == 2) ? 0x02 : (i == 1) ? 0x08 : 0x01;
+        printf("  Rhythm: %s (bit 0x%02X)\n", rhythm_names[i], bit);
+        ym2413_write_reg(0x0E, 0x20 | bit);
+        sleep_ms(400);
+        ym2413_write_reg(0x0E, 0x20); // silence
+        sleep_ms(100);
+    }
+
+    // Play all rhythms together for 1 second
+    printf("  All rhythms together\n");
+    ym2413_write_reg(0x0E, 0x3F);
+    sleep_ms(1000);
+    ym2413_write_reg(0x0E, 0x20); // silence
+
+    // Disable rhythm mode
+    ym2413_write_reg(0x0E, 0x00);
+    sleep_ms(100);
 }
 
 static void play_instrument_demo(void) {
@@ -228,6 +305,7 @@ static void play_instrument_demo(void) {
         sleep_ms(600);
         ym2413_note_off(0);
         sleep_ms(100);
+        check_serial_command();
     }
 }
 
@@ -313,8 +391,14 @@ int main() {
     printf("Playing instrument demo...\n");
     play_instrument_demo();
 
+    printf("Testing rhythm channels...\n");
+    play_rhythm_demo();
+
     printf("Demo complete. Looping melody...\n");
+    printf("Send 'BOOTSEL' over USB CDC to enter flash mode.\n");
+
     while (true) {
+        check_serial_command();
         gpio_put(PIN_LED, 1);
         play_melody();
         gpio_put(PIN_LED, 0);

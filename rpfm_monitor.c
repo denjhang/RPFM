@@ -21,6 +21,7 @@
 #define ID_BAUD      1005
 #define ID_STATUS    1006
 #define ID_RESCAN    1007
+#define ID_COPY      1008
 #define WM_SERIAL_DATA (WM_USER + 1)
 
 #define MAX_LINES   8192
@@ -30,7 +31,8 @@
 
 static const char CLASS_NAME[] = "RPFMMonitor";
 
-static HWND hEdit, hPortCombo, hBaud, hConnect, hClearBtn, hStatus, hRescanBtn;
+static HWND hEdit, hPortCombo, hBaud, hConnect, hClearBtn, hStatus, hRescanBtn, hCopyBtn;
+static char lastPort[64] = "";
 static HFONT hFont, hFontUI;
 static HANDLE hSerial = INVALID_HANDLE_VALUE;
 static OVERLAPPED ovRead;
@@ -81,14 +83,16 @@ static void add_line(const char *text) {
     }
     *p = '\0';
 
-    int scrollPos = (int)SendMessage(hEdit, EM_GETFIRSTVISIBLELINE, 0, 0);
-    int lineCountVis = (int)SendMessage(hEdit, EM_GETLINECOUNT, 0, 0);
-    BOOL atBottom = (scrollPos + 20 >= lineCountVis);
+    SCROLLINFO si = {0};
+    si.cbSize = sizeof(si);
+    si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
+    GetScrollInfo(hEdit, SB_VERT, &si);
+    BOOL atBottom = (si.nPos + (int)si.nPage >= si.nMax - 1);
 
     SendMessage(hEdit, WM_SETTEXT, 0, (LPARAM)buf);
 
     if (atBottom) {
-        SendMessage(hEdit, EM_LINESCROLL, 0, 999999);
+        SendMessage(hEdit, WM_VSCROLL, SB_BOTTOM, 0);
     }
 
     HeapFree(GetProcessHeap(), 0, buf);
@@ -111,6 +115,36 @@ static void add_raw_data(const char *data, int len) {
                 accum[accumLen++] = c;
             }
         }
+    }
+}
+
+/* --- Registry: remember last port --- */
+
+static const char *REG_KEY = "Software\\RPFMMonitor";
+
+static void save_last_port(const char *port) {
+    HKEY hKey;
+    if (RegCreateKeyExA(HKEY_CURRENT_USER, REG_KEY, 0, NULL, 0,
+                        KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
+        RegSetValueExA(hKey, "LastPort", 0, REG_SZ,
+                       (const BYTE *)port, (DWORD)(strlen(port) + 1));
+        RegCloseKey(hKey);
+    }
+}
+
+static void load_last_port(void) {
+    lastPort[0] = '\0';
+    HKEY hKey;
+    if (RegOpenKeyExA(HKEY_CURRENT_USER, REG_KEY, 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        DWORD size = sizeof(lastPort) - 1;
+        DWORD type;
+        if (RegQueryValueExA(hKey, "LastPort", NULL, &type,
+                             (LPBYTE)lastPort, &size) == ERROR_SUCCESS && type == REG_SZ) {
+            lastPort[size] = '\0';
+        } else {
+            lastPort[0] = '\0';
+        }
+        RegCloseKey(hKey);
     }
 }
 
@@ -189,18 +223,22 @@ static void refresh_port_combo(void) {
     scan_com_ports();
 
     int newSel = 0;
+    int matchedPrev = 0;
     for (int i = 0; i < portCount; i++) {
         SendMessage(hPortCombo, CB_ADDSTRING, 0, (LPARAM)ports[i]);
         if (strlen(prevPort) > 0 && strcmp(ports[i], prevPort) == 0) {
             newSel = i;
+            matchedPrev = 1;
         }
     }
 
-    /* If no previous selection, prefer USB-type ports */
-    if (strlen(prevPort) == 0) {
+    /* If no previous selection, try to match the saved last port from registry */
+    if (!matchedPrev && strlen(prevPort) == 0 && strlen(lastPort) > 0) {
         for (int i = 0; i < portCount; i++) {
-            /* Higher COM numbers are usually USB CDC devices */
-            newSel = i;
+            if (strcmp(ports[i], lastPort) == 0) {
+                newSel = i;
+                break;
+            }
         }
     }
 
@@ -315,6 +353,7 @@ static BOOL open_serial(void) {
 
     char msg[128];
     snprintf(msg, sizeof(msg), "Connected: %s @ %lu", port, baud);
+    save_last_port(port);
     SetWindowTextA(hStatus, msg);
     SetWindowTextA(hConnect, "Disconnect");
     EnableWindow(hPortCombo, FALSE);
@@ -359,6 +398,7 @@ static void layout(HWND hwnd) {
 
     MoveWindow(hConnect, m + 328, topY, 80, bh, TRUE);
     MoveWindow(hClearBtn, m + 414, topY, 60, bh, TRUE);
+    MoveWindow(hCopyBtn, m + 480, topY, 60, bh, TRUE);
 
     int editY = topY + bh + m;
     MoveWindow(hEdit, m, editY, w - 2 * m, h - editY - sh - m, TRUE);
@@ -403,6 +443,10 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                                   WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                                   0, 0, 60, 26, hwnd, (HMENU)ID_CLEAR, NULL, NULL);
 
+        hCopyBtn = CreateWindowA("BUTTON", "Copy",
+                                 WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                                 0, 0, 60, 26, hwnd, (HMENU)ID_COPY, NULL, NULL);
+
         hEdit = CreateWindowA("EDIT", "",
                               WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL |
                               ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL |
@@ -419,10 +463,12 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         SendMessage(hRescanBtn, WM_SETFONT, (WPARAM)hFontUI, TRUE);
         SendMessage(hConnect, WM_SETFONT, (WPARAM)hFontUI, TRUE);
         SendMessage(hClearBtn, WM_SETFONT, (WPARAM)hFontUI, TRUE);
+        SendMessage(hCopyBtn, WM_SETFONT, (WPARAM)hFontUI, TRUE);
         SendMessage(hStatus, WM_SETFONT, (WPARAM)hFontUI, TRUE);
         SendMessage(GetDlgItem(hwnd, 2001), WM_SETFONT, (WPARAM)hFontUI, TRUE);
         SendMessage(GetDlgItem(hwnd, 2002), WM_SETFONT, (WPARAM)hFontUI, TRUE);
 
+        load_last_port();
         refresh_port_combo();
         layout(hwnd);
         return 0;
@@ -470,6 +516,26 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             clear_lines();
             SendMessage(hEdit, WM_SETTEXT, 0, (LPARAM)"");
             break;
+        case ID_COPY: {
+            int textLen = (int)SendMessage(hEdit, WM_GETTEXTLENGTH, 0, 0);
+            if (textLen > 0) {
+                HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE | GMEM_DDESHARE,
+                                           textLen + 1);
+                if (hMem) {
+                    char *p = (char *)GlobalLock(hMem);
+                    SendMessage(hEdit, WM_GETTEXT, textLen + 1, (LPARAM)p);
+                    GlobalUnlock(hMem);
+                    if (OpenClipboard(hwnd)) {
+                        EmptyClipboard();
+                        SetClipboardData(CF_TEXT, hMem);
+                        CloseClipboard();
+                    } else {
+                        GlobalFree(hMem);
+                    }
+                }
+            }
+            break;
+        }
         }
         break;
 
