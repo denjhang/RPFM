@@ -174,41 +174,50 @@ YMF288M2024.8.11.hex
 
 **路径：** `自制模块板/`
 
-| 模块板 | 芯片 | 说明 |
-|--------|------|------|
-| RE2-YM2151 | YM2151 (OPM) | 8 通道 FM |
-| RE2-YM2203 | YM2203 (OPN) | 3 FM + 3 SSG |
-| RE2-YM2413 | YM2413 (OPLL) | 9 通道旋律 + 5 节奏 |
-| RE2-YM2608 | YM2608 (OPNA) | 6 FM + 3 SSG + ADPCM |
-| RE2-YM2612-3438 | YM2612 (OPN2) | 6 FM + DAC |
-| RE2-YM3812_3526 | YM3812 (OPLL2) | 双 OPLL |
-| RE2-YMF262 | YMF262 (OPL3) | 4 算子 FM |
-| RE2-YMF276-288-289 | YMF288 (OPN3L) | YM2608 兼容 |
-| RE2-YMF297 | YMF297 (OPL4) | OPL3 + 波形表 |
-| RE2-Y8950 | Y8950 (MSX-AUDIO) | OPL1 + ADPCM |
-| RE2-AY8910-YMZ284 | AY-3-8910 / YMZ284 | PSG 方波音源 |
-| RE2-SN76489 | SN76489 | PSG 方波音源 |
-| RE2-SAA1099 | SAA1099 | 双声道方波 |
-| RE2-2xYM3812 | 2×YM3812 | 双 OPLL |
-| RE2-AYB03 | 2×OPLL + SSG | 复合音源 |
-| RE2-NBV5 | 2×OPM + SSG | 复合音源 |
-| RE2-YM2163 | YM2163 (OPP) | 雅马哈键盘音源 |
-| RE2-YM3302 | YM3302 | 稀有芯片 |
-| RE2-YM3427 | YM3427 | 稀有芯片 |
-| RE2-YM3806 | YM3806 | 稀有芯片 |
-| RE2-YM7129 | YM7129 | 空间处理器 |
-| RE2-YMU762 | YMU762 | 手机音源 |
-| RE2-YMZ261-285 | YMZ261 / YMZ285 | 稀有芯片 |
-| RE2-YMZ280B | YMZ280B | PCM 音源 |
-| RE2-YMZ284-294 | YMZ284 / YMZ294 | PSG 变体 |
-| RE2-i8253 | Intel 8253 | 可编程定时器 |
-| RE2-TLC7524 | TLC7524 | DAC |
-| RE2-NRTBD | — | 定制模块 |
-| RE2-SDQ1 | — | 定制模块 |
-| RE2-M208B1 | — | 定制模块 |
-| RE2-SPFM Tower | — | SPFM 塔式扩展 |
-| RE2-SPFM_Light | — | SPFM Light 兼容板 |
-| PS98-YM2610 | YM2610 (NeoGeo) | NeoGeo 音源 |
+### 模块板开发时间线（按文件日期排序）
+
+```
+2023.12  RE2-SPFM Tower            SPFM 塔式扩展
+2023.12  RE2-SPFM_Light            SPFM Light 兼容板
+
+2024.09  RE2-YM2151                YM2151 (OPM) 8通道FM
+2024.09  RE2-YM2608                YM2608 (OPNA) 6FM+3SSG+ADPCM
+2024.09  RE2-YMF262                YMF262 (OPL3) 4算子FM
+2024.09  RE2-YM2203                YM2203 (OPN) 3FM+3SSG
+
+2024.10  RE2-AYB03                 2×OPLL + SSG 复合音源
+2024.10  RE2-Y8950                 Y8950 (MSX-AUDIO) OPL1+ADPCM
+2024.10  RE2-YM3302                YM3302 稀有芯片
+2024.10  RE2-YM3806                YM3806 稀有芯片
+2024.10  RE2-YMU762                YMU762 手机音源
+2024.10  RE2-YMZ284-294            YMZ284/YMZ294 PSG变体
+2024.10  RE2-AY8910-YMZ284         AY-3-8910/YMZ284 PSG方波
+2024.10  RE2-i8253                 Intel 8253 可编程定时器
+2024.10  RE2-SN76489               SN76489 PSG方波
+2024.10  RE2-2xYM3812              2×YM3812 双OPLL
+2024.10  RE2-YM3812_3526           YM3812 (OPLL2)
+2024.10  RE2-YMF276-288-289        YMF288 (OPN3L) YM2608兼容
+2024.10  RE2-NRTBD                 定制模块
+
+2024.11  RE2-NBV5                  2×OPM + SSG 复合音源
+
+2025.01  RE2-YM2612-3438           YM2612 (OPN2) 6FM+DAC
+2025.01  RE2-SDQ1                  定制模块
+2025.01  RE2-YM3427                YM3427 稀有芯片
+
+2025.02  RE2-YM7129                YM7129 空间处理器
+2025.02  RE2-M208B1                定制模块
+2025.02  RE2-TLC7524               TLC7524 DAC
+2025.02  RE2-YMZ261-285            YMZ261/YMZ285 稀有芯片
+2025.02  RE2-YMZ280B               YMZ280B PCM音源
+
+2025.03  RE2-YM2163                YM2163 (OPP) 雅马哈键盘音源
+2025.03  RE2-SAA1099               SAA1099 双声道方波
+2025.03  RE2-YMF297                YMF297 (OPL4) OPL3+波形表
+
+2025.04  RE2-RESPFM                RE:Birth主控板
+2025.05  RE2-YM2413                YM2413 (OPLL) 9通道旋律+5节奏
+```
 
 ## 项目源码位置索引
 
