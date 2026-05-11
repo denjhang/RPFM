@@ -17,7 +17,7 @@ PICO_SDK_PATH="$SDK_PATH" cmake -G "Unix Makefiles" \
     -DPICO_BOARD=pico2 \
     -DPICO_CONFIG_HEADER_FILE="${SDK_PATH}/../pico_sdk_config.h" \
     ..
-BUILD_CMD="make -j2"
+BUILD_CMD="make -j4"
 
 echo "=== Fixing MSYS2 path issue ==="
 AUTOGEN="generated/pico_base/pico/config_autogen.h"

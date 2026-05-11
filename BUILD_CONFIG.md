@@ -75,10 +75,13 @@ make -j4
 ```
 RPFM/
 ├── CMakeLists.txt           # Pico SDK 构建配置
-├── build.sh                # 一键构建脚本（含路径修复）
-├── main.c                 # 固件主代码
-├── ym2413.pio             # PIO 总线驱动程序
-└── pico-sdk-2.2.0/        # Pico SDK 2.2.0（tar.gz 解压）
+├── build.sh                 # 一键构建脚本（含路径修复）
+├── main.c                   # 固件主代码（bitbang + PIO 双驱动）
+├── main_bitbang.c           # bitbang 版本备份（已验证可发声）
+├── ym2413.pio               # PIO 总线驱动程序
+├── rpfm_monitor.c           # Win32 GDI 串口监视器（USB CDC）
+├── pico_sdk_config.h        # SDK 自定义配置
+└── pico-sdk-2.2.0/          # Pico SDK 2.2.0（含 TinyUSB 子模块）
 ```
 
 ### 6.2 一键构建
@@ -139,8 +142,32 @@ build/rpfm_ym2413_test.bin    # 二进制文件
 
 > 注意：GPIO0-8 必须连续（PIO `out pins, 9` 要求）。数据总线固定 GPIO0-7，WR# 紧随其后在 GPIO8，其他信号分散分配。
 
-## 9. 已知限制
+## 9. USB CDC 调试输出
 
-- TinyUSB 子模块未初始化，USB 串口不可用（UART 串口可用）
+使用 TinyUSB 通过 USB CDC 实现虚拟串口，`printf()` 输出可通过 rpfm_monitor 查看。
+
+### 9.1 CMakeLists.txt 配置
+
+**关键**：不要手动链接 `tinyusb_device`。只需用 `pico_enable_stdio_usb` 即可，SDK 会自动处理 TinyUSB 的链接和配置。
+
+```cmake
+target_link_libraries(target PRIVATE pico_stdlib hardware_gpio hardware_pio)
+pico_enable_stdio_usb(target 1)
+pico_enable_stdio_uart(target 0)
+```
+
+参考了官方 `hello_usb` 示例（pico-examples/hello_world/usb/）。
+
+### 9.2 串口监视器
+
+`rpfm_monitor.c` 是 Win32 GDI 串口监视程序，支持 COM 端口自动扫描、连接/断开、清除。
+
+```bash
+gcc -o rpfm_monitor.exe rpfm_monitor.c -mwindows -lsetupapi
+```
+
+## 10. 已知限制
+
+- PIO 驱动尚未调通（bitbang 驱动已验证可正常发声）
 - 只在 MSYS2 mingw64 环境下验证通过，Windows CMD + Pico 官方 cmake 未测试
 - 每次 `cmake` 后都需要执行 sed 路径修复

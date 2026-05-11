@@ -10,6 +10,9 @@
 #include <windows.h>
 #include <stdio.h>
 #include <string.h>
+#include <initguid.h>
+#include <devguid.h>
+#include <setupapi.h>
 
 #define ID_EDIT      1001
 #define ID_CONNECT   1002
@@ -17,20 +20,24 @@
 #define ID_PORT      1004
 #define ID_BAUD      1005
 #define ID_STATUS    1006
+#define ID_RESCAN    1007
 #define WM_SERIAL_DATA (WM_USER + 1)
 
 #define MAX_LINES   8192
 #define LINE_BUF    1024
 #define READ_SIZE   4096
+#define MAX_PORTS   64
 
 static const char CLASS_NAME[] = "RPFMMonitor";
 
-static HWND hEdit, hPort, hBaud, hConnect, hClearBtn, hStatus;
+static HWND hEdit, hPortCombo, hBaud, hConnect, hClearBtn, hStatus, hRescanBtn;
 static HFONT hFont, hFontUI;
 static HANDLE hSerial = INVALID_HANDLE_VALUE;
 static OVERLAPPED ovRead;
 static char readBuf[READ_SIZE];
 static HWND hMainWnd;
+static char ports[MAX_PORTS][64];
+static int portCount = 0;
 
 /* --- Line buffer --- */
 
@@ -58,10 +65,9 @@ static void add_line(const char *text) {
     memcpy(lines[lineCount], text, len + 1);
     lineCount++;
 
-    /* Rebuild full text */
     int totalLen = 0;
     for (int i = 0; i < lineCount; i++) {
-        totalLen += (int)strlen(lines[i]) + 2; /* \r\n */
+        totalLen += (int)strlen(lines[i]) + 2;
     }
 
     char *buf = HeapAlloc(GetProcessHeap(), 0, totalLen + 1);
@@ -75,7 +81,6 @@ static void add_line(const char *text) {
     }
     *p = '\0';
 
-    /* Remember if user was scrolled to bottom */
     int scrollPos = (int)SendMessage(hEdit, EM_GETFIRSTVISIBLELINE, 0, 0);
     int lineCountVis = (int)SendMessage(hEdit, EM_GETLINECOUNT, 0, 0);
     BOOL atBottom = (scrollPos + 20 >= lineCountVis);
@@ -107,6 +112,109 @@ static void add_raw_data(const char *data, int len) {
             }
         }
     }
+}
+
+/* --- COM Port enumeration --- */
+
+static void scan_com_ports(void) {
+    portCount = 0;
+    memset(ports, 0, sizeof(ports));
+
+    /* Method 1: SetupAPI - enumerate all serial ports */
+    HDEVINFO hDevInfo = SetupDiGetClassDevsA(&GUID_DEVCLASS_PORTS, NULL, NULL,
+                                             DIGCF_PRESENT);
+    if (hDevInfo != INVALID_HANDLE_VALUE) {
+        SP_DEVINFO_DATA devInfo;
+        devInfo.cbSize = sizeof(devInfo);
+        for (int i = 0; SetupDiEnumDeviceInfo(hDevInfo, i, &devInfo); i++) {
+            char friendlyName[256] = {0};
+            if (SetupDiGetDeviceRegistryPropertyA(hDevInfo, &devInfo,
+                    SPDRP_FRIENDLYNAME, NULL, (PBYTE)friendlyName,
+                    sizeof(friendlyName), NULL)) {
+                /* Extract COM port number from friendly name like "USB Serial Device (COM10)" */
+                char *com = strstr(friendlyName, "(COM");
+                if (com) {
+                    com += 1; /* skip '(' */
+                    char *end = strchr(com, ')');
+                    if (end) {
+                        int len = (int)(end - com);
+                        if (portCount < MAX_PORTS && len < 63) {
+                            memcpy(ports[portCount], com, len);
+                            ports[portCount][len] = '\0';
+                            portCount++;
+                        }
+                    }
+                }
+            }
+        }
+        SetupDiDestroyDeviceInfoList(hDevInfo);
+    }
+
+    /* Method 2: Registry fallback - get any ports missed by SetupAPI */
+    HKEY hKey;
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
+            "HARDWARE\\DEVICEMAP\\SERIALCOMM", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        char valName[256], portData[64];
+        DWORD idx = 0, nameSize, dataSize, type;
+        while (1) {
+            nameSize = sizeof(valName);
+            dataSize = sizeof(portData);
+            if (RegEnumValueA(hKey, idx++, valName, &nameSize, NULL, &type,
+                              (LPBYTE)portData, &dataSize) != ERROR_SUCCESS) break;
+            if (type != REG_SZ) continue;
+            /* Check if already in list */
+            int found = 0;
+            for (int j = 0; j < portCount; j++) {
+                if (strcmp(ports[j], portData) == 0) { found = 1; break; }
+            }
+            if (!found && portCount < MAX_PORTS) {
+                strncpy(ports[portCount], portData, 63);
+                ports[portCount][63] = '\0';
+                portCount++;
+            }
+        }
+        RegCloseKey(hKey);
+    }
+}
+
+static void refresh_port_combo(void) {
+    int prevSel = (int)SendMessage(hPortCombo, CB_GETCURSEL, 0, 0);
+    char prevPort[64] = "";
+    if (prevSel >= 0) {
+        SendMessage(hPortCombo, CB_GETLBTEXT, prevSel, (LPARAM)prevPort);
+    }
+
+    SendMessage(hPortCombo, CB_RESETCONTENT, 0, 0);
+
+    scan_com_ports();
+
+    int newSel = 0;
+    for (int i = 0; i < portCount; i++) {
+        SendMessage(hPortCombo, CB_ADDSTRING, 0, (LPARAM)ports[i]);
+        if (strlen(prevPort) > 0 && strcmp(ports[i], prevPort) == 0) {
+            newSel = i;
+        }
+    }
+
+    /* If no previous selection, prefer USB-type ports */
+    if (strlen(prevPort) == 0) {
+        for (int i = 0; i < portCount; i++) {
+            /* Higher COM numbers are usually USB CDC devices */
+            newSel = i;
+        }
+    }
+
+    if (portCount > 0) {
+        SendMessage(hPortCombo, CB_SETCURSEL, newSel, 0);
+    }
+}
+
+static const char *get_selected_port(void) {
+    int sel = (int)SendMessage(hPortCombo, CB_GETCURSEL, 0, 0);
+    if (sel >= 0 && sel < portCount) {
+        return ports[sel];
+    }
+    return NULL;
 }
 
 /* --- Serial --- */
@@ -151,10 +259,9 @@ static BOOL open_serial(void) {
         hSerial = INVALID_HANDLE_VALUE;
     }
 
-    char port[64];
-    GetWindowTextA(hPort, port, sizeof(port));
-    if (strlen(port) == 0) {
-        MessageBoxA(hMainWnd, "Enter COM port (e.g. COM3)", "Error", MB_ICONERROR);
+    const char *port = get_selected_port();
+    if (!port) {
+        MessageBoxA(hMainWnd, "No COM port selected", "Error", MB_ICONERROR);
         return FALSE;
     }
 
@@ -205,6 +312,8 @@ static BOOL open_serial(void) {
     snprintf(msg, sizeof(msg), "Connected: %s @ %lu", port, baud);
     SetWindowTextA(hStatus, msg);
     SetWindowTextA(hConnect, "Disconnect");
+    EnableWindow(hPortCombo, FALSE);
+    EnableWindow(hRescanBtn, FALSE);
     add_line(msg);
     add_line("---");
 
@@ -220,60 +329,8 @@ static void close_serial(void) {
     }
     SetWindowTextA(hConnect, "Connect");
     SetWindowTextA(hStatus, "Disconnected");
-}
-
-/* --- Auto-detect Pico COM port --- */
-
-static void auto_detect_port(void) {
-    /* Enumerate COM ports via registry */
-    HKEY hKey;
-    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
-            "HARDWARE\\DEVICEMAP\\SERIALCOMM", 0, KEY_READ, &hKey) != ERROR_SUCCESS) {
-        return;
-    }
-
-    char valName[256];
-    char portData[64];
-    DWORD idx = 0;
-    DWORD nameSize, dataSize;
-    DWORD type;
-
-    while (1) {
-        nameSize = sizeof(valName);
-        dataSize = sizeof(portData);
-        LONG ret = RegEnumValueA(hKey, idx++, valName, &nameSize, NULL, &type,
-                                 (LPBYTE)portData, &dataSize);
-        if (ret != ERROR_SUCCESS) break;
-
-        /* Pico USB CDC usually shows up as \Device\USBSER000 */
-        if (type == REG_SZ && strstr(valName, "Prolific") != NULL ||
-            strstr(valName, "USBSER") != NULL ||
-            strstr(valName, "Serial") != NULL ||
-            strstr(valName, "CH340") != NULL ||
-            strstr(valName, "Silabser") != NULL) {
-            SetWindowTextA(hPort, portData);
-            RegCloseKey(hKey);
-            return;
-        }
-    }
-
-    /* If no match, try the last COM port (most recently added) */
-    idx = 0;
-    char lastPort[64] = "";
-    while (1) {
-        nameSize = sizeof(valName);
-        dataSize = sizeof(portData);
-        LONG ret = RegEnumValueA(hKey, idx++, valName, &nameSize, NULL, &type,
-                                 (LPBYTE)portData, &dataSize);
-        if (ret != ERROR_SUCCESS) break;
-        strncpy(lastPort, portData, sizeof(lastPort));
-    }
-
-    if (strlen(lastPort) > 0) {
-        SetWindowTextA(hPort, lastPort);
-    }
-
-    RegCloseKey(hKey);
+    EnableWindow(hPortCombo, TRUE);
+    EnableWindow(hRescanBtn, TRUE);
 }
 
 /* --- Window layout --- */
@@ -282,22 +339,21 @@ static void layout(HWND hwnd) {
     RECT rc;
     GetClientRect(hwnd, &rc);
     int w = rc.right, h = rc.bottom;
-    int m = 8;     /* margin */
-    int bh = 26;   /* button/edit height */
-    int sh = 22;   /* status bar height */
+    int m = 8;
+    int bh = 26;
+    int sh = 22;
 
     int topY = m;
 
-    /* Label: Port */
     MoveWindow(GetDlgItem(hwnd, 2001), m, topY + 4, 32, bh - 4, TRUE);
-    MoveWindow(hPort, m + 34, topY, 80, bh, TRUE);
+    MoveWindow(hPortCombo, m + 34, topY, 120, 200, TRUE);
+    MoveWindow(hRescanBtn, m + 158, topY, 50, bh, TRUE);
 
-    /* Label: Baud */
-    MoveWindow(GetDlgItem(hwnd, 2002), m + 120, topY + 4, 32, bh - 4, TRUE);
-    MoveWindow(hBaud, m + 152, topY, 70, bh, TRUE);
+    MoveWindow(GetDlgItem(hwnd, 2002), m + 218, topY + 4, 32, bh - 4, TRUE);
+    MoveWindow(hBaud, m + 250, topY, 70, bh, TRUE);
 
-    MoveWindow(hConnect, m + 230, topY, 80, bh, TRUE);
-    MoveWindow(hClearBtn, m + 316, topY, 60, bh, TRUE);
+    MoveWindow(hConnect, m + 328, topY, 80, bh, TRUE);
+    MoveWindow(hClearBtn, m + 414, topY, 60, bh, TRUE);
 
     int editY = topY + bh + m;
     MoveWindow(hEdit, m, editY, w - 2 * m, h - editY - sh - m, TRUE);
@@ -316,19 +372,23 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                               DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY,
                               DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
 
-        /* Labels */
         CreateWindowA("STATIC", "Port:", WS_CHILD | WS_VISIBLE | SS_RIGHT,
                       0, 0, 32, 20, hwnd, (HMENU)2001, NULL, NULL);
         CreateWindowA("STATIC", "Baud:", WS_CHILD | WS_VISIBLE | SS_RIGHT,
                       0, 0, 32, 20, hwnd, (HMENU)2002, NULL, NULL);
 
-        hPort = CreateWindowA("EDIT", "COM3",
-                              WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
-                              0, 0, 80, 26, hwnd, (HMENU)ID_PORT, NULL, NULL);
+        hPortCombo = CreateWindowA("COMBOBOX", "",
+                                   WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST |
+                                   WS_VSCROLL | CBS_AUTOHSCROLL,
+                                   0, 0, 120, 200, hwnd, (HMENU)ID_PORT, NULL, NULL);
 
         hBaud = CreateWindowA("EDIT", "115200",
                               WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
                               0, 0, 70, 26, hwnd, (HMENU)ID_BAUD, NULL, NULL);
+
+        hRescanBtn = CreateWindowA("BUTTON", "Scan",
+                                   WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                                   0, 0, 50, 26, hwnd, (HMENU)ID_RESCAN, NULL, NULL);
 
         hConnect = CreateWindowA("BUTTON", "Connect",
                                  WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
@@ -348,17 +408,17 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                                 WS_CHILD | WS_VISIBLE | SS_LEFT | SS_SUNKEN,
                                 0, 0, 400, 22, hwnd, (HMENU)ID_STATUS, NULL, NULL);
 
-        /* Set fonts */
         SendMessage(hEdit, WM_SETFONT, (WPARAM)hFont, TRUE);
-        SendMessage(hPort, WM_SETFONT, (WPARAM)hFontUI, TRUE);
+        SendMessage(hPortCombo, WM_SETFONT, (WPARAM)hFontUI, TRUE);
         SendMessage(hBaud, WM_SETFONT, (WPARAM)hFontUI, TRUE);
+        SendMessage(hRescanBtn, WM_SETFONT, (WPARAM)hFontUI, TRUE);
         SendMessage(hConnect, WM_SETFONT, (WPARAM)hFontUI, TRUE);
         SendMessage(hClearBtn, WM_SETFONT, (WPARAM)hFontUI, TRUE);
         SendMessage(hStatus, WM_SETFONT, (WPARAM)hFontUI, TRUE);
         SendMessage(GetDlgItem(hwnd, 2001), WM_SETFONT, (WPARAM)hFontUI, TRUE);
         SendMessage(GetDlgItem(hwnd, 2002), WM_SETFONT, (WPARAM)hFontUI, TRUE);
 
-        auto_detect_port();
+        refresh_port_combo();
         layout(hwnd);
         return 0;
     }
@@ -391,6 +451,9 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
     case WM_COMMAND:
         switch (LOWORD(wParam)) {
+        case ID_RESCAN:
+            refresh_port_combo();
+            break;
         case ID_CONNECT:
             if (hSerial != INVALID_HANDLE_VALUE) {
                 close_serial();
@@ -440,7 +503,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLine, int nShow) {
 
     hMainWnd = CreateWindowExA(0, CLASS_NAME, "RPFM Serial Monitor",
                                WS_OVERLAPPEDWINDOW,
-                               CW_USEDEFAULT, CW_USEDEFAULT, 700, 500,
+                               CW_USEDEFAULT, CW_USEDEFAULT, 720, 500,
                                NULL, NULL, hInst, NULL);
 
     ShowWindow(hMainWnd, nShow);
