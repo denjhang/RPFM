@@ -4,17 +4,18 @@
  *
  * Hardware wiring (RP2350A GPIO -> SPFM sound card module):
  *
- *   PIO-controlled (9 consecutive pins, GPIO0-8):
+ *   PIO-controlled (11 consecutive pins, GPIO0-10):
  *     GPIO0-7  -> D0-D7   (data bus)
  *     GPIO8    -> WR#     (write strobe, active low)
+ *     GPIO9    -> A0      (address/data select)
+ *     GPIO10   -> CS0#    (chip select, active low)
  *
  *   CPU-controlled:
- *     GPIO9    -> A0      (address/data select)
- *     GPIO10   -> CS0     (chip select, active low)
- *     GPIO11   -> IC      (reset, active low)
+ *     GPIO11   -> IC#     (reset, active low)
  *     GPIO12   -> A1      (unused by YM2413, SPFM bus compat)
  *     GPIO13   -> A2      (unused by YM2413)
  *     GPIO14   -> A3      (unused by YM2413)
+ *     GPIO25   -> LED     (heartbeat)
  *     GND      -> GND     (must be connected!)
  */
 
@@ -30,12 +31,10 @@
 
 // ========== Pin Definitions ==========
 
-// PIO-controlled (9 consecutive pins):
-#define PIN_BUS_BASE  0     // GPIO0-8 = D0-D7 + WR#
+// PIO-controlled (11 consecutive pins):
+#define PIN_BUS_BASE  0     // GPIO0-10 = D0-D7 + WR# + A0 + CS0#
 
 // CPU-controlled:
-#define PIN_A0   9
-#define PIN_CS0  10
 #define PIN_IC   11
 #define PIN_A1   12
 #define PIN_A2   13
@@ -51,37 +50,6 @@
 
 static PIO s_pio = pio0;
 static uint s_sm = 0;
-static bool s_use_pio = true;
-
-// ========== Bitbang YM2413 Driver (fallback for debugging) ==========
-
-static inline void data_bus_write(uint8_t val) {
-    gpio_put_masked(0xFF, (uint32_t)val);
-}
-
-void ym2413_write_reg_bitbang(uint8_t reg, uint8_t data) {
-    gpio_put(PIN_CS0, 0);
-
-    // Address phase: A0=0
-    gpio_put(PIN_A0, 0);
-    data_bus_write(reg);
-    sleep_us(1);
-    gpio_put(PIN_BUS_BASE + 8, 0);  // WR# low
-    sleep_us(1);
-    gpio_put(PIN_BUS_BASE + 8, 1);  // WR# high
-    sleep_us(2);
-
-    // Data phase: A0=1
-    gpio_put(PIN_A0, 1);
-    data_bus_write(data);
-    sleep_us(1);
-    gpio_put(PIN_BUS_BASE + 8, 0);  // WR# low
-    sleep_us(1);
-    gpio_put(PIN_BUS_BASE + 8, 1);  // WR# high
-    sleep_us(2);
-
-    gpio_put(PIN_CS0, 1);
-}
 
 // ========== PIO YM2413 Driver ==========
 
@@ -95,18 +63,8 @@ static void pio_ym2413_init(void) {
     printf("  PIO: SM initialized, enabled\n");
 }
 
-void ym2413_write_reg_pio(uint8_t reg, uint8_t data) {
-    ym2413_pio_write_reg(s_pio, s_sm, PIN_A0, PIN_CS0, reg, data);
-}
-
-// ========== Unified Write Function ==========
-
 static inline void ym2413_write_reg(uint8_t reg, uint8_t data) {
-    if (s_use_pio) {
-        ym2413_write_reg_pio(reg, data);
-    } else {
-        ym2413_write_reg_bitbang(reg, data);
-    }
+    ym2413_pio_write_reg(s_pio, s_sm, reg, data);
 }
 
 // ========== YM2413 Control Functions ==========
@@ -313,15 +271,7 @@ static void play_instrument_demo(void) {
 // ========== GPIO Initialization ==========
 
 static void gpio_init_all(void) {
-    // CPU-controlled pins
-    gpio_init(PIN_A0);
-    gpio_set_dir(PIN_A0, GPIO_OUT);
-    gpio_put(PIN_A0, 0);
-
-    gpio_init(PIN_CS0);
-    gpio_set_dir(PIN_CS0, GPIO_OUT);
-    gpio_put(PIN_CS0, 1);
-
+    // CPU-controlled pins only (IC#, A1-A3, LED)
     gpio_init(PIN_IC);
     gpio_set_dir(PIN_IC, GPIO_OUT);
     gpio_put(PIN_IC, 1);
@@ -336,7 +286,7 @@ static void gpio_init_all(void) {
     gpio_set_dir(PIN_LED, GPIO_OUT);
     gpio_put(PIN_LED, 0);
 
-    // GPIO0-8 (D0-D7, WR) are initialized by PIO in pio_ym2413_init()
+    // GPIO0-10 (D0-D7, WR#, A0, CS0#) initialized by PIO
 }
 
 // ========== Main ==========
@@ -349,23 +299,8 @@ int main() {
     printf("Initializing GPIO...\n");
     gpio_init_all();
 
-    // Initialize data bus + WR# pins
-    // PIO mode: these pins are initialized by pio_ym2413_init() - do NOT re-init here
-    // Bitbang mode: we need to init them as GPIO outputs
-    if (!s_use_pio) {
-        for (int i = PIN_BUS_BASE; i < PIN_BUS_BASE + 9; i++) {
-            gpio_init(i);
-            gpio_set_dir(i, GPIO_OUT);
-            gpio_put(i, 0);
-        }
-    }
-
-    if (s_use_pio) {
-        printf("Initializing PIO...\n");
-        pio_ym2413_init();
-    } else {
-        printf("Using bitbang driver\n");
-    }
+    printf("Initializing PIO...\n");
+    pio_ym2413_init();
 
     printf("Resetting YM2413...\n");
     ym2413_reset();

@@ -1,87 +1,76 @@
-; ym2413.pio - YM2413 OPLL PIO bus driver
+; ym2413.pio - YM2413 OPLL PIO bus driver (full parallel)
 ;
-; GPIO mapping (9 consecutive pins starting at base_pin):
-;   GPIO[base+0] to GPIO[base+7]: D0-D7 data bus
-;   GPIO[base+8]: WR# (write strobe, active low, bit8=1 idle, bit8=0 active)
+; GPIO mapping (11 consecutive pins starting at base_pin=0):
+;   GPIO0-7:  D0-D7  (data bus)
+;   GPIO8:    WR#    (write strobe, active low)
+;   GPIO9:    A0     (address/data select)
+;   GPIO10:   CS0#   (chip select, active low)
 ;
-; A0, CS# are controlled by the CPU (not PIO).
+; GPIO11: IC# (reset, CPU controlled)
 ;
-; Timing: PIO outputs one WR# pulse per 32-bit word. The C side controls
-; inter-signal timing with busy_wait_us_32() to match MegaGRRL timing:
-;   20us between each signal change (A0, CS#, data, WR#)
-;
-; 32-bit word format (packed by C helper):
-;   bits [8:0]   = D0-D7 data + WR#=1 (setup, WR idle high)
-;   bits [17:9]  = D0-D7 data + WR#=0 (WR pulse active low)
-;   bits [26:18] = D0-D7 data + WR#=1 (WR release, data hold)
-;   bits [31:27] = unused
+; 32-bit word format (3 phases packed):
+;   bits [10:0]   = D0-D7 + WR#=1 + A0 + CS0# (setup, WR idle high)
+;   bits [21:11]  = D0-D7 + WR#=0 + A0 + CS0# (WR pulse active low)
+;   bits [31:22]  = D0-D7 + WR#=1 + A0 + CS0# (hold)
+; 3 x 11 bits = 33 bits, does not fit in 32. So we use per-phase push.
 
 .program ym2413_write
 
     pull block                  ; get 32-bit word
-
-    ; Setup: D=data, WR#=1
-    out pins, 9                 ; bits[8:0] -> D0-D7, WR#=1
-    nop [5]                     ; setup hold: 6 cycles = 48ns
-
-    ; WR# pulse: D=data, WR#=0
-    out pins, 9                 ; bits[17:9] -> D0-D7, WR#=0
-    nop [5]                     ; WR# low: 6 cycles = 48ns
-
-    ; WR# release: D=data, WR#=1
-    out pins, 9                 ; bits[26:18] -> D0-D7, WR#=1
-    nop [5]                     ; data hold: 6 cycles = 48ns
+    out pins, 11                ; bits[10:0] -> D0-D7, WR#, A0, CS0#
 
 % c-sdk {
 static inline void ym2413_write_program_init(PIO pio, uint sm, uint offset, uint base_pin) {
     pio_sm_config c = pio_get_default_sm_config();
 
-    sm_config_set_out_pins(&c, base_pin, 9);
+    sm_config_set_out_pins(&c, base_pin, 11);
     sm_config_set_out_shift(&c, true, true, 32);
-    sm_config_set_wrap(&c, offset, offset + 7);
+    sm_config_set_wrap(&c, offset, offset + 1);
 
-    for (int i = 0; i < 9; i++) {
+    for (int i = 0; i < 11; i++) {
         pio_gpio_init(pio, base_pin + i);
     }
-    pio_sm_set_consecutive_pindirs(pio, sm, base_pin, 9, true);
-    pio_sm_set_pins_with_mask(pio, sm, (1u << 8) << base_pin, ((1u << 9) - 1) << base_pin);
+    pio_sm_set_consecutive_pindirs(pio, sm, base_pin, 11, true);
+    pio_sm_set_pins_with_mask(pio, sm,
+        ((1u << 8) | (1u << 10) | 0xFF) << base_pin,
+        ((1u << 11) - 1) << base_pin);
 
     pio_sm_init(pio, sm, offset, &c);
     pio_sm_set_enabled(pio, sm, true);
 }
 
-static inline uint32_t pack_phase(uint8_t data_val) {
-    uint32_t wr_hi = (1u << 8) | data_val;
-    uint32_t wr_lo = (0u << 8) | data_val;
-    return (wr_hi << 18) | (wr_lo << 9) | wr_hi;
+// 11-bit word: [10:CS0#][9:A0][8:WR#][7:0:D0-D7]
+static inline uint32_t pack_bus(uint8_t data, bool a0, bool wr_n, bool cs0_n) {
+    return ((cs0_n ? 1u : 0u) << 10)
+         | ((a0 ? 1u : 0u) << 9)
+         | ((wr_n ? 1u : 0u) << 8)
+         | data;
 }
 
-static inline void pio_write_phase(PIO pio, uint sm, uint8_t data_val) {
-    pio_sm_put_blocking(pio, sm, pack_phase(data_val));
+static inline void pio_bus_put(PIO pio, uint sm, uint32_t val) {
+    pio_sm_put_blocking(pio, sm, val);
     while (!pio_sm_is_tx_fifo_empty(pio, sm)) {}
 }
 
-// YM2413 write following MegaGRRL Driver_FmOutopll() timing:
-//   20us between each signal change
 static inline void ym2413_pio_write_reg(PIO pio, uint sm,
-                                         uint pin_a0, uint pin_cs,
                                          uint8_t reg, uint8_t data) {
-    // A0 = 0 (address phase)
-    gpio_put(pin_a0, 0);
+    // Address phase: A0=0, CS0#=0, WR# pulse
+    pio_bus_put(pio, sm, pack_bus(reg, false, true, false));
+    busy_wait_us_32(20);
+    pio_bus_put(pio, sm, pack_bus(reg, false, false, false));
+    busy_wait_us_32(20);
+    pio_bus_put(pio, sm, pack_bus(reg, false, true, false));
     busy_wait_us_32(20);
 
-    // CS# low, put address on data bus
-    gpio_put(pin_cs, 0);
-    pio_write_phase(pio, sm, reg);
+    // Data phase: A0=1, CS0#=0, WR# pulse
+    pio_bus_put(pio, sm, pack_bus(data, true, true, false));
+    busy_wait_us_32(20);
+    pio_bus_put(pio, sm, pack_bus(data, true, false, false));
+    busy_wait_us_32(20);
+    pio_bus_put(pio, sm, pack_bus(data, true, true, false));
     busy_wait_us_32(20);
 
-    // A0 = 1 (data phase), put data on data bus
-    gpio_put(pin_a0, 1);
-    pio_write_phase(pio, sm, data);
-    busy_wait_us_32(20);
-
-    // CS# high
-    gpio_put(pin_cs, 1);
-    busy_wait_us_32(20);
+    // Release: CS0#=1, WR#=1, A0=0, D=0xFF
+    pio_bus_put(pio, sm, pack_bus(0xFF, false, true, true));
 }
 %}
