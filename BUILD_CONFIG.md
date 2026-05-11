@@ -158,7 +158,15 @@ pico_enable_stdio_uart(target 0)
 
 参考了官方 `hello_usb` 示例（pico-examples/hello_world/usb/）。
 
-### 9.2 串口监视器
+### 9.2 为什么之前认为 USB CDC 不兼容？
+
+调试过程中曾尝试手动链接 `tinyusb_device`，导致固件"死机"（`stdio_init_all()` 永久挂起），误判为 TinyUSB 不兼容 RP2350。
+
+**根因**：手动 `target_link_libraries(... tinyusb_device)` 会使 SDK 设置 `LIB_TINYUSB_DEVICE` 标志。`pico_stdio_usb` 检测到该标志后，跳过自己的 TinyUSB 配置（包括定义 `CFG_TUD_CDC=1`）。结果 TinyUSB 被编译进去了，但 CDC 类未启用，USB 枚举后没有 CDC 接口，`stdio_init_all()` 等待 CDC 就绪就永远挂住。
+
+**结论**：TinyUSB 完全兼容 RP2350。错误在于多此一举手动链接，打乱了 SDK 内部的配置顺序。正确做法是只链接 `pico_stdlib`，让 `pico_enable_stdio_usb()` 内部处理所有事情。
+
+### 9.3 串口监视器
 
 `rpfm_monitor.c` 是 Win32 GDI 串口监视程序，支持 COM 端口自动扫描、连接/断开、清除。
 
