@@ -7,13 +7,15 @@ SCCI 握手成功，YM2413 寄存器写入正常，MDPlayer 通过 SCCI 播放 V
 ## 最终方案
 
 基于 YM2413 演示版最小改动，完全参考 ym2151-rp2040.txt 的协议解析逻辑。
+PIO 全并行总线驱动，D0-D7 + WR# + A0 + CS0# 全部由 PIO 原子输出。
 
 ### 改动文件
 
 | 文件 | 改动 |
 |------|------|
 | `CMakeLists.txt` | 加 `PICO_STDIO_USB_CONNECTION_WITHOUT_DTR=1` |
-| `main.c` | 加 `#include "tusb.h"`，while 循环换成 SPFM 协议解析 |
+| `src/main.c` | 加 `#include "tusb.h"`，SPFM 协议解析，移除 bitbang 和 CPU 总线控制 |
+| `src/ym2413.pio` | 11-bit 全并行输出：D0-D7 + WR# + A0 + CS0# |
 
 ### 核心设计决策
 
@@ -62,14 +64,30 @@ parse_idx==3 一次调用 `ym2413_write_reg`。分两次调用会写入错误数
 ## 硬件接线
 
 ```
-GPIO0-7:   D0-D7 (PIO, ym2413.pio)
+GPIO0-7:   D0-D7 (PIO, 11-bit 并行)
 GPIO8:     WR#   (PIO)
-GPIO9:     A0    (CPU)
-GPIO10:    CS0   (CPU)
+GPIO9:     A0    (PIO)
+GPIO10:    CS0#  (PIO)
 GPIO11:    IC#   (CPU)
 GPIO12-14: A1-A3 (CPU, YM2413 未用)
 GPIO25:    LED   (CPU 心跳)
 ```
+
+## PIO 全并行总线
+
+`ym2413.pio` 控制 GPIO0-10 共 11 个引脚，PIO word 格式：
+
+```
+bit[7:0]  = D0-D7 数据
+bit[8]    = WR# (1=空闲高, 0=写脉冲低)
+bit[9]    = A0  (0=地址相位, 1=数据相位)
+bit[10]   = CS0# (1=未选中, 0=选中)
+```
+
+写寄存器流程（C 侧 push 7 个 word）：
+1. 地址相位：A0=0, CS0#=0, WR#=1 → WR#=0 → WR#=1（各间隔 20µs）
+2. 数据相位：A0=1, CS0#=0, WR#=1 → WR#=0 → WR#=1（各间隔 20µs）
+3. 释放：CS0#=1, WR#=1, A0=0, D=0xFF
 
 ## 参考源码
 
