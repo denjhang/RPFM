@@ -27,7 +27,12 @@ target_link_libraries(rpfm_ym2413_test PRIVATE
     hardware_pio
 )
 
-# USB CDC 输出，禁用 UART 输出
+# SCCI doesn't set DTR
+target_compile_definitions(rpfm_ym2413_test PRIVATE
+    PICO_STDIO_USB_CONNECTION_WITHOUT_DTR=1
+)
+
+# USB CDC output, disable UART
 pico_enable_stdio_usb(rpfm_ym2413_test 1)
 pico_enable_stdio_uart(rpfm_ym2413_test 0)
 

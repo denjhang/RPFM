@@ -26,6 +26,7 @@
 #include "hardware/pio.h"
 #include "pico/bootrom.h"
 #include "ym2413.pio.h"
+#include "tusb.h"
 
 // ========== Pin Definitions ==========
 
@@ -377,32 +378,85 @@ int main() {
         sleep_ms(150);
     }
 
-    printf("Playing test tone...\n");
-    play_test_tone();
+    printf("Ready. Waiting for SCCI...\n");
 
-    printf("Playing scale...\n");
-    play_scale();
+    // SPFM protocol state — ym2151 style
+    uint16_t uart_idle_cnt = 10000;
+    uint8_t scci_parse_idx = 0;
+    uint8_t scci_slot = 0;
+    uint8_t scci_cmd = 0;
+    uint8_t scci_a = 0;
 
-    printf("Playing melody...\n");
-    gpio_put(PIN_LED, 1);
-    play_melody();
-    gpio_put(PIN_LED, 0);
-
-    printf("Playing instrument demo...\n");
-    play_instrument_demo();
-
-    printf("Testing rhythm channels...\n");
-    play_rhythm_demo();
-
-    printf("Demo complete. Looping melody...\n");
-    printf("Send 'BOOTSEL' over USB CDC to enter flash mode.\n");
+    // LED heartbeat
+    bool led_state = false;
+    absolute_time_t led_next = make_timeout_time_ms(500);
 
     while (true) {
-        check_serial_command();
-        gpio_put(PIN_LED, 1);
-        play_melody();
-        gpio_put(PIN_LED, 0);
-        sleep_ms(2000);
+        // Frame sync timeout
+        if (--uart_idle_cnt == 0) {
+            scci_parse_idx = 0;
+            uart_idle_cnt = 10000;
+        }
+
+        // LED heartbeat — always runs
+        if (time_reached(led_next)) {
+            led_state = !led_state;
+            gpio_put(PIN_LED, led_state);
+            led_next = make_timeout_time_ms(500);
+        }
+
+        // Read one byte
+        int ch = getchar_timeout_us(0);
+        if (ch == PICO_ERROR_TIMEOUT) continue;
+
+        uint8_t uart_data = (uint8_t)ch;
+        uart_idle_cnt = 10000;
+
+        // Protocol parser — ym2151 style
+        if (scci_parse_idx == 0) {
+            if (uart_data == 0xFF) {
+                tud_cdc_write("RS", 2);
+                tud_cdc_write_flush();
+            } else if (uart_data == 0xFE) {
+                ym2413_reset();
+                ym2413_mute_all();
+                tud_cdc_write("OK", 2);
+                tud_cdc_write_flush();
+            } else if ((uart_data & 0xF0) == 0x00) {
+                scci_slot = uart_data & 0x0F;
+                scci_parse_idx = 1;
+            }
+        }
+        else if (scci_parse_idx == 1) {
+            scci_cmd = uart_data & 0xF0;
+            if (scci_cmd == 0x00 || scci_cmd == 0x80) {
+                scci_a = uart_data & 0x0F;
+                scci_parse_idx = 2;
+            } else if (scci_cmd == 0x20) {
+                scci_parse_idx = 2;
+            } else {
+                scci_parse_idx = 0;
+            }
+        }
+        else if (scci_parse_idx == 2) {
+            if (scci_cmd == 0x00) {
+                ym2413_write_reg(scci_a & 0xFE, uart_data);
+                scci_parse_idx = 3;
+            } else if (scci_cmd == 0x80) {
+                ym2413_write_reg(scci_a, uart_data);
+                scci_parse_idx = 0;
+            } else if (scci_cmd == 0x20) {
+                scci_parse_idx = 0;
+            } else {
+                scci_parse_idx = 0;
+            }
+        }
+        else if (scci_parse_idx == 3) {
+            if (scci_cmd == 0x00) {
+                ym2413_write_reg(scci_a | 0x01, uart_data);
+            }
+            scci_parse_idx = 0;
+        }
     }
 
     return 0;
