@@ -56,17 +56,18 @@ GPIO13:    A3        bit[13]   地址线3
 
 ### GPIO16: 板载 WS2812（跳过）
 
-### PIO1 SM1: GPIO17-19（片选+复位，WS2812 之后）
+### PIO1 SM1: GPIO17-20（片选）
 
 ```
 GPIO17:    CS0#                片选0（低有效）
 GPIO18:    CS1#                片选1（低有效）
 GPIO19:    CS2#                片选2（低有效）
 GPIO20:    CS3#                片选3（低有效）
-GPIO21:    IC#                 复位信号（低有效）
 ```
 
-PIO1 用 `set pins` 控制非连续引脚，切换芯片时调用一次。
+GPIO17-20 连续 4 个引脚，PIO1 SM1 用 `out pins, 4` 控制。
+CS 切换与数据写入可原子完成，避免 CPU 中断导致片选抖动。
+IC# 不进 PIO，上电复位一次即可。
 
 ### 固定引脚
 
@@ -80,7 +81,7 @@ GPIO25:    LED        CPU 心跳
 | PIO | SM | 用途 | 引脚 |
 |-----|-----|------|------|
 | PIO0 | SM0 | 14-bit 数据+读写+地址 | GPIO0-13 |
-| PIO1 | SM1 | CS0-CS3 + IC# | GPIO17-21 |
+| PIO1 | SM1 | CS0-CS3 片选 | GPIO17-20 |
 
 GPIO16 WS2812 不参与，跳过。
 剩余 PIO 资源：PIO0 SM1-3, PIO1 SM0/SM2-3 可用于未来扩展。
@@ -100,7 +101,7 @@ GPIO16 WS2812 不参与，跳过。
 | 18 | CS1# | PIO1 SM1 → Bus Board |
 | 19 | CS2# | PIO1 SM1 → Bus Board |
 | 20 | CS3# | PIO1 SM1 → Bus Board |
-| 21 | IC# 复位 | PIO1 SM1 → Bus Board |
+| 21 | IC# 复位 | CPU gpio（上电复位一次） |
 | 22 | SPI0 SCK | ILI9341 |
 | 23 | SPI0 MOSI | ILI9341 |
 | 24 | SPI0 MISO | ILI9341 |
@@ -384,41 +385,58 @@ uint16_t touch_read(uint8_t cmd) {
 
 **注意：** ILI9341 和触摸屏共用 SPI0 时，需确保不会同时操作（互斥）。
 
-### PIO1 SM1: CS0-CS3 + IC# 辅助信号
+### PIO1 SM1: CS0-CS3 片选（PIO 控制）
 
 ```c
-// 初始化 PIO1 SM1
+// PIO1 SM1 word 格式 (4-bit):
+//   bit[0]=CS0#, bit[1]=CS1#, bit[2]=CS2#, bit[3]=CS3#
+//   1=空闲(高), 0=有效(低)
+
+// 全空闲: 0x0F
+#define CS_IDLE    0x0F
+
+// 选择单个 CS（其他保持空闲）
+//   cs=0 → 0x0E, cs=1 → 0x0D, cs=2 → 0x0B, cs=3 → 0x07
+static inline uint32_t cs_pack(uint8_t cs) {
+    return CS_IDLE & ~(1u << cs);
+}
+
+static inline void pio_cs_put(PIO pio, uint sm, uint32_t val) {
+    pio_sm_put_blocking(pio, sm, val);
+    while (!pio_sm_is_tx_fifo_empty(pio, sm)) {}
+}
+
 void pio_cs_init(void) {
     PIO pio = pio1;
     uint sm = pio_claim_unused_sm(pio, true);
+    pio_sm_config c = pio_get_default_sm_config();
 
-    // 设置 GPIO17-21 为输出，初始状态：CS 全高（未选），IC# 高（未复位）
-    for (int i = 17; i <= 21; i++) {
-        pio_gpio_init(pio, i);
-        gpio_set_dir(i, GPIO_OUT);
-        gpio_put(i, 1);  // CS#=1, IC#=1
-    }
-}
+    sm_config_set_out_pins(&c, 17, 4);
+    sm_config_set_out_shift(&c, true, true, 32);
+    sm_config_set_wrap(&c, 0, 1);
 
-// 选择芯片
-void cs_select(uint8_t chip) {
-    // chip: 0=CS0#, 1=CS1#, 2=CS2#, 3=CS3#
-    gpio_put(17 + chip, 0);
-}
-
-// 取消所有选择
-void cs_deselect_all(void) {
     for (int i = 17; i <= 20; i++) {
-        gpio_put(i, 1);
+        pio_gpio_init(pio, i);
     }
+    pio_sm_set_consecutive_pindirs(pio, sm, 17, 4, true);
+    pio_sm_set_pins_with_mask(pio, sm,
+        CS_IDLE << 17, 0x0F << 17);
+
+    pio_sm_init(pio, sm, 0, &c);
+    pio_sm_set_enabled(pio, sm, true);
+
+    // push idle state
+    pio_cs_put(pio, sm, CS_IDLE);
 }
 
-// 复位
-void ic_reset(void) {
-    gpio_put(21, 0);
-    sleep_ms(1);
-    gpio_put(21, 1);
-    sleep_ms(10);
+// 选择芯片（原子操作，CS 变化与后续 PIO0 总线写入无间隙）
+static inline void cs_select(PIO pio, uint sm, uint8_t chip) {
+    pio_cs_put(pio, sm, cs_pack(chip));
+}
+
+// 取消所有片选
+static inline void cs_deselect_all(PIO pio, uint sm) {
+    pio_cs_put(pio, sm, CS_IDLE);
 }
 ```
 
