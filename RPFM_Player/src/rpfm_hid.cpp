@@ -125,8 +125,9 @@ bool rpfm_send_reset(void) {
 
 bool rpfm_send_vgm_data(const uint8_t *data, uint8_t len, uint16_t *buf_level) {
     s_seq = (s_seq + 1) & 0xFF;
+    // Only read response when caller needs buf_level — avoids HidD_GetInputReport blocking
     rpfm_resp_t resp;
-    bool ok = rpfm_hid_send_frame(CMD_VGM_DATA, s_seq, data, len, &resp);
+    bool ok = rpfm_hid_send_frame(CMD_VGM_DATA, s_seq, data, len, buf_level ? &resp : NULL);
     if (ok && buf_level) *buf_level = resp.buf_level;
     return ok;
 }
@@ -135,7 +136,7 @@ bool rpfm_vgm_start(uint16_t loop_offset, uint8_t *status) {
     s_seq = (s_seq + 1) & 0xFF;
     uint8_t payload[2] = { (uint8_t)(loop_offset & 0xFF), (uint8_t)(loop_offset >> 8) };
     rpfm_resp_t resp;
-    bool ok = rpfm_hid_send_frame(CMD_VGM_START, s_seq, payload, 2, &resp);
+    bool ok = rpfm_hid_send_frame(CMD_VGM_START, s_seq, payload, 2, status ? &resp : NULL);
     if (ok && status) *status = resp.status;
     return ok;
 }

@@ -1694,7 +1694,7 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
     if (s_vgmLoopOffset > 0 && s_vgmLoopOffset >= s_vgmDataOffset)
         loopOff = (uint16_t)(s_vgmLoopOffset - s_vgmDataOffset);
 
-    // Retry VGM_START a few times — device may need a moment after VGM_STOP
+    // Retry VGM_START — pass NULL status to skip response read (avoids HID blocking)
     bool started = false;
     for (int retry = 0; retry < 5 && s_vgmStreamRunning && s_vgmPlaying; retry++) {
         if (rpfm_vgm_start(loopOff, NULL)) {
@@ -1712,16 +1712,20 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
 
     // Phase 2: Continue streaming remaining data
     bool allDataSent = (s_streamSent >= localTotal);
+    int queryCounter = 0;
 
     while (s_vgmStreamRunning && s_vgmPlaying) {
         if (s_vgmPaused) { Sleep(10); continue; }
 
-        // Backpressure: wait if firmware buffer is >50% full
+        // Backpressure: query buf_level every 16 frames to avoid HID blocking
         if (s_bufLevel > s_bufTotal / 2) {
-            uint8_t dummy = 0;
-            uint16_t newLevel = 0;
-            if (rpfm_send_vgm_data(&dummy, 0, &newLevel))
-                s_bufLevel = newLevel;
+            if (++queryCounter >= 16) {
+                queryCounter = 0;
+                uint8_t dummy = 0;
+                uint16_t newLevel = 0;
+                if (rpfm_send_vgm_data(&dummy, 0, &newLevel))
+                    s_bufLevel = newLevel;
+            }
             Sleep(1);
             continue;
         }
@@ -1733,12 +1737,14 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
                 DcLog("[VGM-Stream] All %u bytes sent, waiting for firmware to finish\n", s_streamSent);
             } else {
                 size_t toSend = (remain > 60) ? 60 : remain;
-                uint16_t newBufLevel = 0;
-                if (!rpfm_send_vgm_data(&localData[localPos], (uint8_t)toSend, &newBufLevel)) {
+                // Only read buf_level every 16 frames
+                uint16_t *pLevel = (++queryCounter % 16 == 0) ? &s_bufLevel : nullptr;
+                uint16_t dummyLevel = 0;
+                if (!pLevel) pLevel = &dummyLevel;
+                if (!rpfm_send_vgm_data(&localData[localPos], (uint8_t)toSend, pLevel)) {
                     DcLog("[VGM-Stream] HID send failed\n");
                     break;
                 }
-                s_bufLevel = newBufLevel;
                 localPos += toSend;
                 s_streamSent += (uint32_t)toSend;
 
