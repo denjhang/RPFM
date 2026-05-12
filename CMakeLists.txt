@@ -11,32 +11,44 @@ endif()
 
 include(pico_sdk_import.cmake)
 
-project(rpfm_ym2413_test C CXX ASM)
+project(rpfm C CXX ASM)
 
 pico_sdk_init()
 
-add_executable(rpfm_ym2413_test
-    src/main.c
+# ========== Protocol Selection ==========
+# Set PROTOCOL to "scci" or "rpfm" (default: rpfm)
+set(PROTOCOL "rpfm" CACHE STRING "Protocol: scci or rpfm")
+
+if(PROTOCOL STREQUAL "scci")
+    set(PROTO_DIR "scci")
+    set(TARGET_NAME "rpfm_scci")
+else()
+    set(PROTO_DIR "rpfm")
+    set(TARGET_NAME "rpfm")
+endif()
+
+message("Building protocol: ${PROTO_DIR} -> ${TARGET_NAME}")
+
+add_executable(${TARGET_NAME}
+    src/${PROTO_DIR}/main.c
 )
 
-pico_generate_pio_header(rpfm_ym2413_test ${CMAKE_CURRENT_SOURCE_DIR}/src/ym2413.pio)
-pico_generate_pio_header(rpfm_ym2413_test ${CMAKE_CURRENT_SOURCE_DIR}/src/pio_cs.pio)
-pico_generate_pio_header(rpfm_ym2413_test ${CMAKE_CURRENT_SOURCE_DIR}/src/ws2812.pio)
+pico_generate_pio_header(${TARGET_NAME} ${CMAKE_CURRENT_SOURCE_DIR}/src/${PROTO_DIR}/ym2413.pio)
+pico_generate_pio_header(${TARGET_NAME} ${CMAKE_CURRENT_SOURCE_DIR}/src/${PROTO_DIR}/pio_cs.pio)
+pico_generate_pio_header(${TARGET_NAME} ${CMAKE_CURRENT_SOURCE_DIR}/src/${PROTO_DIR}/ws2812.pio)
 
-target_link_libraries(rpfm_ym2413_test PRIVATE
+target_link_libraries(${TARGET_NAME} PRIVATE
     pico_stdlib
     hardware_gpio
     hardware_pio
     pico_multicore
 )
 
-# SCCI doesn't set DTR
-target_compile_definitions(rpfm_ym2413_test PRIVATE
+target_compile_definitions(${TARGET_NAME} PRIVATE
     PICO_STDIO_USB_CONNECTION_WITHOUT_DTR=1
 )
 
-# USB CDC output, disable UART
-pico_enable_stdio_usb(rpfm_ym2413_test 1)
-pico_enable_stdio_uart(rpfm_ym2413_test 0)
+pico_enable_stdio_usb(${TARGET_NAME} 1)
+pico_enable_stdio_uart(${TARGET_NAME} 0)
 
-pico_add_extra_outputs(rpfm_ym2413_test)
+pico_add_extra_outputs(${TARGET_NAME})

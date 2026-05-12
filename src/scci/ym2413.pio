@@ -1,0 +1,85 @@
+; ym2413.pio - YM2413 OPLL PIO bus driver (14-bit full parallel)
+;
+; GPIO mapping (14 consecutive pins starting at base_pin=0):
+;   GPIO0-7:  D0-D7  (data bus)
+;   GPIO8:    WR#    (write strobe, active low)
+;   GPIO9:    RD#    (read strobe, active low)
+;   GPIO10:   A0     (address/data select)
+;   GPIO11:   A1
+;   GPIO12:   A2
+;   GPIO13:   A3
+;
+; CS0-CS3: PIO1 SM1 (GPIO17-20, separate 4-bit output)
+; IC#: GPIO21 (CPU controlled, power-on reset only)
+;
+; 32-bit word format (14-bit bus):
+;   bits [7:0]   = D0-D7
+;   bit  [8]     = WR# (1=idle, 0=pulse)
+;   bit  [9]     = RD# (1=idle, 0=read)
+;   bits [13:10] = A3 A2 A1 A0
+;
+; Idle state: D=0xFF, WR#=1, RD#=1, A0-A3=0 = 0x03FF
+
+.program ym2413_write
+
+    pull block                  ; get 32-bit word
+    out pins, 14                ; bits[13:0] -> D0-D7, WR#, RD#, A0-A3
+
+% c-sdk {
+static inline void ym2413_write_program_init(PIO pio, uint sm, uint offset, uint base_pin) {
+    pio_sm_config c = pio_get_default_sm_config();
+
+    sm_config_set_out_pins(&c, base_pin, 14);
+    sm_config_set_out_shift(&c, true, true, 32);
+    sm_config_set_wrap(&c, offset, offset + 1);
+
+    for (int i = 0; i < 14; i++) {
+        pio_gpio_init(pio, base_pin + i);
+    }
+    pio_sm_set_consecutive_pindirs(pio, sm, base_pin, 14, true);
+    pio_sm_set_pins_with_mask(pio, sm,
+        ((1u << 8) | (1u << 9) | 0xFF) << base_pin,
+        ((1u << 14) - 1) << base_pin);
+
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+
+// 14-bit word: [13:A3][12:A2][11:A1][10:A0][9:RD#][8:WR#][7:0:D0-D7]
+// Idle: 0x03FF (D=0xFF, WR#=1, RD#=1, A0-A3=0)
+#define BUS_IDLE 0x03FFu
+
+static inline uint32_t pack_bus(uint8_t data, uint8_t addr, bool wr_n, bool rd_n) {
+    return ((uint32_t)(wr_n ? 1u : 0u) << 8)
+         | ((uint32_t)(rd_n ? 1u : 0u) << 9)
+         | ((uint32_t)(addr & 0x0F) << 10)
+         | (uint32_t)data;
+}
+
+static inline void pio_bus_put(PIO pio, uint sm, uint32_t val) {
+    pio_sm_put_blocking(pio, sm, val);
+    while (!pio_sm_is_tx_fifo_empty(pio, sm)) {}
+}
+
+static inline void ym2413_pio_write_reg(PIO pio, uint sm,
+                                         uint8_t reg, uint8_t data) {
+    // Address phase: A0=0, WR# pulse
+    pio_bus_put(pio, sm, pack_bus(reg, 0, true, true));
+    busy_wait_us_32(20);
+    pio_bus_put(pio, sm, pack_bus(reg, 0, false, true));
+    busy_wait_us_32(20);
+    pio_bus_put(pio, sm, pack_bus(reg, 0, true, true));
+    busy_wait_us_32(20);
+
+    // Data phase: A0=1, WR# pulse
+    pio_bus_put(pio, sm, pack_bus(data, 1, true, true));
+    busy_wait_us_32(20);
+    pio_bus_put(pio, sm, pack_bus(data, 1, false, true));
+    busy_wait_us_32(20);
+    pio_bus_put(pio, sm, pack_bus(data, 1, true, true));
+    busy_wait_us_32(20);
+
+    // Release: WR#=1, RD#=1, A0-A3=0, D=0xFF
+    pio_bus_put(pio, sm, BUS_IDLE);
+}
+%}
