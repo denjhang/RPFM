@@ -376,6 +376,8 @@ int main() {
     // LED heartbeat
     bool led_state = false;
     absolute_time_t led_next = make_timeout_time_ms(500);
+    bool led_data_active = false;
+    absolute_time_t led_data_timeout = nil_time;
 
     while (true) {
         // Frame sync timeout
@@ -384,11 +386,18 @@ int main() {
             uart_idle_cnt = 10000;
         }
 
-        // LED heartbeat — always runs
-        if (time_reached(led_next)) {
-            led_state = !led_state;
-            gpio_put(PIN_LED, led_state);
-            led_next = make_timeout_time_ms(500);
+        // LED: data blink (1ms per byte) or slow heartbeat when idle
+        if (led_data_active) {
+            if (time_reached(led_data_timeout)) {
+                led_data_active = false;
+                gpio_put(PIN_LED, 0);
+            }
+        } else {
+            if (time_reached(led_next)) {
+                led_state = !led_state;
+                gpio_put(PIN_LED, led_state);
+                led_next = make_timeout_time_ms(500);
+            }
         }
 
         // Read one byte
@@ -397,17 +406,27 @@ int main() {
 
         uint8_t uart_data = (uint8_t)ch;
         uart_idle_cnt = 10000;
+        // LED: instant 1ms flash per byte
+        led_data_active = true;
+        led_data_timeout = make_timeout_time_ms(1);
+        gpio_put(PIN_LED, 1);
 
         // Protocol parser — ym2151 style
         if (scci_parse_idx == 0) {
             if (uart_data == 0xFF) {
                 tud_cdc_write("RS", 2);
                 tud_cdc_write_flush();
+                led_data_active = true;
+                led_data_timeout = make_timeout_time_ms(1);
+                gpio_put(PIN_LED, 1);
             } else if (uart_data == 0xFE) {
                 ym2413_reset();
                 ym2413_mute_all();
                 tud_cdc_write("OK", 2);
                 tud_cdc_write_flush();
+                led_data_active = true;
+                led_data_timeout = make_timeout_time_ms(1);
+                gpio_put(PIN_LED, 1);
             } else if ((uart_data & 0xF0) == 0x00) {
                 scci_slot = uart_data & 0x0F;
                 scci_parse_idx = 1;
