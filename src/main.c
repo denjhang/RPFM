@@ -37,6 +37,7 @@
 #include "ym2413.pio.h"
 #include "pio_cs.pio.h"
 #include "ws2812.pio.h"
+#include "hardware/sync/spin_lock.h"
 #include "tusb.h"
 #include "ring_buf.h"
 
@@ -70,6 +71,12 @@
 // ========== Ring Buffer ==========
 
 static ring_buf_t s_ring;
+
+// Spinlock to protect PIO1 access (CS + WS2812 share PIO1)
+static spin_lock_t *s_pio1_lock;
+
+// Handshake flag: Core 1 pauses when set
+static volatile bool s_handshake_active = false;
 
 // ========== Global PIO State ==========
 
@@ -116,8 +123,10 @@ static inline uint32_t cs_pack(uint8_t slot) {
 }
 
 static inline void pio_cs_put(PIO pio, uint sm, uint32_t val) {
+    uint32_t save = spin_lock_blocking(s_pio1_lock);
     pio_sm_put_blocking(pio, sm, val);
     while (!pio_sm_is_tx_fifo_empty(pio, sm)) {}
+    spin_unlock(s_pio1_lock, save);
 }
 
 static void pio_cs_init(void) {
@@ -162,9 +171,11 @@ static void ws2812_init(void) {
 
 // Send all 4 pixels to WS2812 (must always send complete frame)
 static void ws2812_update(void) {
+    uint32_t save = spin_lock_blocking(s_pio1_lock);
     for (int i = 0; i < NUM_WS_LEDS; i++) {
         pio_sm_put_blocking(s_ws_pio, s_ws_sm, s_ws_leds[i] << 8u);
     }
+    spin_unlock(s_pio1_lock, save);
 }
 
 static inline void ws_led_on(uint8_t slot) {
@@ -216,9 +227,18 @@ static inline void ay8910_write_reg(uint8_t reg, uint8_t data) {
 
 static void bus_ic_reset(void) {
     gpio_put(PIN_IC, 0);
-    sleep_ms(50);  // IC# low for ~50ms (datasheet: tRC几十ms)
+    // Keep USB alive during 50ms reset
+    absolute_time_t t = make_timeout_time_ms(50);
+    while (!time_reached(t)) {
+        tud_task();
+        tight_loop_contents();
+    }
     gpio_put(PIN_IC, 1);
-    sleep_ms(50);
+    t = make_timeout_time_ms(50);
+    while (!time_reached(t)) {
+        tud_task();
+        tight_loop_contents();
+    }
 }
 
 static void ym2413_mute_all(void) {
@@ -438,6 +458,13 @@ static void core1_main(void) {
     uint8_t slot = 0, cmd = 0, a = 0, addr = 0;
 
     while (true) {
+        // Pause during handshake (0xFF/0xFE)
+        if (s_handshake_active) {
+            parse_idx = 0;
+            tight_loop_contents();
+            continue;
+        }
+
         // Frame sync timeout
         if (--idle_cnt == 0) {
             parse_idx = 0;
@@ -511,6 +538,9 @@ int main() {
     printf("Initializing GPIO...\n");
     gpio_init_all();
 
+    // Spinlock for PIO1 (CS + WS2812) — must init before any PIO1 access
+    s_pio1_lock = spin_lock_init(31);
+
     printf("Initializing PIO bus (14-bit)...\n");
     pio_bus_init();
 
@@ -561,14 +591,6 @@ int main() {
 
     printf("Ready. Waiting for SCCI...\n");
 
-    // SPFM protocol state — ym2151 style
-    uint16_t uart_idle_cnt = 10000;
-    uint8_t scci_parse_idx = 0;
-    uint8_t scci_slot = 0;
-    uint8_t scci_cmd = 0;
-    uint8_t scci_a = 0;
-    uint8_t scci_addr = 0;
-
     // LED heartbeat
     bool led_state = false;
     absolute_time_t led_next = make_timeout_time_ms(500);
@@ -579,13 +601,10 @@ int main() {
     absolute_time_t ws_led_timeout = nil_time;
     bool ws_led_timed = false;
 
-    while (true) {
-        // Frame sync timeout
-        if (--uart_idle_cnt == 0) {
-            scci_parse_idx = 0;
-            uart_idle_cnt = 10000;
-        }
+    // Launch Core 1 playback engine
+    multicore_launch_core1(core1_main);
 
+    while (true) {
         // LED: data blink (1ms per byte) or slow heartbeat when idle
         if (led_data_active) {
             if (time_reached(led_data_timeout)) {
@@ -610,89 +629,43 @@ int main() {
             ws_led_timed = false;
         }
 
-        // Read one byte
+        // Read one byte from UART
         int ch = getchar_timeout_us(0);
         if (ch == PICO_ERROR_TIMEOUT) continue;
 
         uint8_t uart_data = (uint8_t)ch;
-        uart_idle_cnt = 10000;
+
         // LED: instant 1ms flash per byte
         led_data_active = true;
         led_data_timeout = make_timeout_time_ms(1);
         gpio_put(PIN_LED, 1);
 
-        // 0x80 = precise delay tick (was NOP in reference firmware)
-        if (uart_data == 0x80) {
-            busy_wait_us_32(SCCI_TICK_US);
+        // Handshake: handled on Core 0 only
+        if (uart_data == 0xFF || uart_data == 0xFE) {
+            s_handshake_active = true;
+
+            if (uart_data == 0xFE) {
+                bus_ic_reset();
+            }
+
+            tud_cdc_write(uart_data == 0xFF ? "RS" : "OK", 2);
+            tud_cdc_write_flush();
+
+            // Drain UART — discard stale data until 1ms idle (frame gap)
+            while (true) {
+                tud_task();
+                int drain = getchar_timeout_us(1000);
+                if (drain == PICO_ERROR_TIMEOUT) break;
+            }
+
+            ring_init(&s_ring);
+            s_handshake_active = false;
             continue;
         }
 
-        // Protocol parser — ym2151 style
-        if (scci_parse_idx == 0) {
-            if (uart_data == 0xFF) {
-                tud_cdc_write("RS", 2);
-                tud_cdc_write_flush();
-                // WS2812 handshake: short blink x2
-                for (int n = 0; n < 2; n++) {
-                    for (int i = 0; i < NUM_WS_LEDS; i++) s_ws_leds[i] = cs_colors[i];
-                    ws2812_update();
-                    sleep_ms(50);
-                    ws_led_off_all();
-                    sleep_ms(50);
-                }
-                led_data_active = true;
-                led_data_timeout = make_timeout_time_ms(1);
-                gpio_put(PIN_LED, 1);
-            } else if (uart_data == 0xFE) {
-                bus_ic_reset();
-                tud_cdc_write("OK", 2);
-                tud_cdc_write_flush();
-                for (int n = 0; n < 2; n++) {
-                    for (int i = 0; i < NUM_WS_LEDS; i++) s_ws_leds[i] = cs_colors[i];
-                    ws2812_update();
-                    sleep_ms(50);
-                    ws_led_off_all();
-                    sleep_ms(50);
-                }
-                led_data_active = true;
-                led_data_timeout = make_timeout_time_ms(1);
-                gpio_put(PIN_LED, 1);
-            } else if ((uart_data & 0xF0) == 0x00) {
-                scci_slot = uart_data & 0x0F;
-                scci_parse_idx = 1;
-            }
-        }
-        else if (scci_parse_idx == 1) {
-            scci_cmd = uart_data & 0xF0;
-            if (scci_cmd == 0x00 || scci_cmd == 0x80) {
-                scci_a = uart_data & 0x0F;
-                scci_parse_idx = 2;
-            } else if (scci_cmd == 0x20) {
-                scci_parse_idx = 2;
-            } else {
-                scci_parse_idx = 0;
-            }
-        }
-        else if (scci_parse_idx == 2) {
-            if (scci_cmd == 0x00) {
-                scci_addr = uart_data;
-                scci_parse_idx = 3;
-            } else if (scci_cmd == 0x80) {
-                cs_select(scci_slot);
-                ym2413_write_reg(scci_a, uart_data);
-                scci_parse_idx = 0;
-            } else if (scci_cmd == 0x20) {
-                scci_parse_idx = 0;
-            } else {
-                scci_parse_idx = 0;
-            }
-        }
-        else if (scci_parse_idx == 3) {
-            if (scci_cmd == 0x00) {
-                cs_select(scci_slot);
-                ym2413_write_reg(scci_addr, uart_data);
-            }
-            scci_parse_idx = 0;
+        // Everything else (0x80 ticks + SCCI data) → ring buffer
+        while (!ring_write(&s_ring, uart_data)) {
+            tight_loop_contents();
         }
     }
 
