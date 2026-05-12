@@ -16,39 +16,63 @@ project(rpfm C CXX ASM)
 pico_sdk_init()
 
 # ========== Protocol Selection ==========
-# Set PROTOCOL to "scci" or "rpfm" (default: rpfm)
 set(PROTOCOL "rpfm" CACHE STRING "Protocol: scci or rpfm")
 
 if(PROTOCOL STREQUAL "scci")
     set(PROTO_DIR "scci")
     set(TARGET_NAME "rpfm_scci")
+
+    add_executable(${TARGET_NAME}
+        src/${PROTO_DIR}/main.c
+    )
+
+    pico_generate_pio_header(${TARGET_NAME} ${CMAKE_CURRENT_SOURCE_DIR}/src/${PROTO_DIR}/ym2413.pio)
+    pico_generate_pio_header(${TARGET_NAME} ${CMAKE_CURRENT_SOURCE_DIR}/src/${PROTO_DIR}/pio_cs.pio)
+    pico_generate_pio_header(${TARGET_NAME} ${CMAKE_CURRENT_SOURCE_DIR}/src/${PROTO_DIR}/ws2812.pio)
+
+    target_link_libraries(${TARGET_NAME} PRIVATE
+        pico_stdlib
+        hardware_gpio
+        hardware_pio
+        pico_multicore
+    )
+
+    target_compile_definitions(${TARGET_NAME} PRIVATE
+        PICO_STDIO_USB_CONNECTION_WITHOUT_DTR=1
+    )
+
+    pico_enable_stdio_usb(${TARGET_NAME} 1)
+    pico_enable_stdio_uart(${TARGET_NAME} 0)
+
 else()
     set(PROTO_DIR "rpfm")
     set(TARGET_NAME "rpfm")
+
+    # Inject our tusb_config.h into TinyUSB before building
+    include_directories(BEFORE ${CMAKE_CURRENT_SOURCE_DIR}/src/${PROTO_DIR})
+
+    add_executable(${TARGET_NAME}
+        src/${PROTO_DIR}/main.c
+        src/${PROTO_DIR}/usb_descriptors.c
+    )
+
+    pico_generate_pio_header(${TARGET_NAME} ${CMAKE_CURRENT_SOURCE_DIR}/src/${PROTO_DIR}/ym2413.pio)
+    pico_generate_pio_header(${TARGET_NAME} ${CMAKE_CURRENT_SOURCE_DIR}/src/${PROTO_DIR}/pio_cs.pio)
+    pico_generate_pio_header(${TARGET_NAME} ${CMAKE_CURRENT_SOURCE_DIR}/src/${PROTO_DIR}/ws2812.pio)
+
+    target_link_libraries(${TARGET_NAME} PRIVATE
+        pico_stdlib
+        hardware_gpio
+        hardware_pio
+        pico_multicore
+        tinyusb_device
+    )
+
+    pico_enable_stdio_usb(${TARGET_NAME} 0)
+    pico_enable_stdio_uart(${TARGET_NAME} 0)
+
 endif()
 
 message("Building protocol: ${PROTO_DIR} -> ${TARGET_NAME}")
-
-add_executable(${TARGET_NAME}
-    src/${PROTO_DIR}/main.c
-)
-
-pico_generate_pio_header(${TARGET_NAME} ${CMAKE_CURRENT_SOURCE_DIR}/src/${PROTO_DIR}/ym2413.pio)
-pico_generate_pio_header(${TARGET_NAME} ${CMAKE_CURRENT_SOURCE_DIR}/src/${PROTO_DIR}/pio_cs.pio)
-pico_generate_pio_header(${TARGET_NAME} ${CMAKE_CURRENT_SOURCE_DIR}/src/${PROTO_DIR}/ws2812.pio)
-
-target_link_libraries(${TARGET_NAME} PRIVATE
-    pico_stdlib
-    hardware_gpio
-    hardware_pio
-    pico_multicore
-)
-
-target_compile_definitions(${TARGET_NAME} PRIVATE
-    PICO_STDIO_USB_CONNECTION_WITHOUT_DTR=1
-)
-
-pico_enable_stdio_usb(${TARGET_NAME} 1)
-pico_enable_stdio_uart(${TARGET_NAME} 0)
 
 pico_add_extra_outputs(${TARGET_NAME})
