@@ -33,10 +33,12 @@
 #include "hardware/gpio.h"
 #include "hardware/pio.h"
 #include "pico/bootrom.h"
+#include "pico/multicore.h"
 #include "ym2413.pio.h"
 #include "pio_cs.pio.h"
 #include "ws2812.pio.h"
 #include "tusb.h"
+#include "ring_buf.h"
 
 // ========== Pin Definitions ==========
 
@@ -59,6 +61,15 @@
 
 #define YM2413_CLOCK    3579545.0
 #define YM2413_FM_CLOCK (YM2413_CLOCK / 72.0)
+
+// ========== SCCI Tick Timing ==========
+
+// 1 VGM sample = 1/44100s ≈ 22.68µs (from DMPlayer spfm_lite.c)
+#define SCCI_TICK_US 23
+
+// ========== Ring Buffer ==========
+
+static ring_buf_t s_ring;
 
 // ========== Global PIO State ==========
 
@@ -168,14 +179,37 @@ static inline void ws_led_off_all(void) {
     ws2812_update();
 }
 
-// ========== YM2413 Write (bus + CS combined) ==========
+// ========== YM2413 Write (bus only, no LED) ==========
 
+static inline void ym2413_write_reg_raw(uint8_t reg, uint8_t data) {
+    ym2413_pio_write_reg(s_bus_pio, s_bus_sm, reg, data);
+}
+
+// With WS2812 LED (for Core 0 use)
 static inline void ym2413_write_reg(uint8_t reg, uint8_t data) {
-    // CS0# is slot 0, flash WS2812 LED
     if (s_ws_ready) {
         ws_led_on(0);
     }
-    ym2413_pio_write_reg(s_bus_pio, s_bus_sm, reg, data);
+    ym2413_write_reg_raw(reg, data);
+}
+
+// ========== AY8910 Write (fast: 1µs per step, ref: MegaGRRL Driver_FmOutpsg) ==========
+
+static inline void ay8910_write_reg(uint8_t reg, uint8_t data) {
+    PIO pio = s_bus_pio;
+    uint sm = s_bus_sm;
+    // Address phase: A0=0, WR# pulse
+    pio_bus_put(pio, sm, pack_bus(reg, 0, true, true));
+    pio_bus_put(pio, sm, pack_bus(reg, 0, false, true));
+    busy_wait_us_32(1);
+    pio_bus_put(pio, sm, pack_bus(reg, 0, true, true));
+    // Data phase: A0=1, WR# pulse
+    pio_bus_put(pio, sm, pack_bus(data, 1, true, true));
+    pio_bus_put(pio, sm, pack_bus(data, 1, false, true));
+    busy_wait_us_32(1);
+    pio_bus_put(pio, sm, pack_bus(data, 1, true, true));
+    // Release
+    pio_bus_put(pio, sm, BUS_IDLE);
 }
 
 // ========== YM2413 Control Functions ==========
@@ -396,7 +430,78 @@ static void gpio_init_all(void) {
     // GPIO17-20 (CS0-CS3) initialized by PIO1
 }
 
-// ========== Main ==========
+// ========== Core 1: SCCI Playback Engine ==========
+
+static void core1_main(void) {
+    uint16_t idle_cnt = 10000;
+    uint8_t parse_idx = 0;
+    uint8_t slot = 0, cmd = 0, a = 0, addr = 0;
+
+    while (true) {
+        // Frame sync timeout
+        if (--idle_cnt == 0) {
+            parse_idx = 0;
+            idle_cnt = 10000;
+        }
+
+        // Read from ring buffer (blocking wait)
+        uint8_t byte;
+        if (!ring_read(&s_ring, &byte)) {
+            tight_loop_contents();
+            continue;
+        }
+        idle_cnt = 10000;
+
+        // 0x80 = precise delay tick
+        if (byte == 0x80 && parse_idx == 0) {
+            busy_wait_us_32(SCCI_TICK_US);
+            continue;
+        }
+
+        // SCCI protocol parser — same logic as reference firmware
+        if (parse_idx == 0) {
+            if ((byte & 0xF0) == 0x00) {
+                slot = byte & 0x0F;
+                parse_idx = 1;
+            }
+        }
+        else if (parse_idx == 1) {
+            cmd = byte & 0xF0;
+            if (cmd == 0x00 || cmd == 0x80) {
+                a = byte & 0x0F;
+                parse_idx = 2;
+            } else if (cmd == 0x20) {
+                parse_idx = 2;
+            } else {
+                parse_idx = 0;
+            }
+        }
+        else if (parse_idx == 2) {
+            if (cmd == 0x00) {
+                addr = byte;
+                parse_idx = 3;
+            } else if (cmd == 0x80) {
+                cs_select(slot);
+                ym2413_write_reg_raw(a, byte);
+                parse_idx = 0;
+            } else if (cmd == 0x20) {
+                // SN76489 write (future)
+                parse_idx = 0;
+            } else {
+                parse_idx = 0;
+            }
+        }
+        else if (parse_idx == 3) {
+            if (cmd == 0x00) {
+                cs_select(slot);
+                ym2413_write_reg_raw(addr, byte);
+            }
+            parse_idx = 0;
+        }
+    }
+}
+
+// ========== Main (Core 0) ==========
 
 int main() {
     stdio_init_all();
@@ -414,6 +519,10 @@ int main() {
 
     printf("Initializing WS2812...\n");
     ws2812_init();
+
+    printf("Initializing ring buffer...\n");
+    ring_init(&s_ring);
+
     s_ws_ready = true;
 
     // WS2812 startup: dim rainbow chase then off
@@ -491,7 +600,7 @@ int main() {
             }
         }
 
-        // WS2812 CS LED: auto off after 1ms
+        // WS2812 CS LED: auto off after 10ms
         if (s_ws_led_pending) {
             s_ws_led_pending = false;
             ws_led_timeout = make_timeout_time_ms(10);
@@ -512,6 +621,12 @@ int main() {
         led_data_timeout = make_timeout_time_ms(1);
         gpio_put(PIN_LED, 1);
 
+        // 0x80 = precise delay tick (was NOP in reference firmware)
+        if (uart_data == 0x80) {
+            busy_wait_us_32(SCCI_TICK_US);
+            continue;
+        }
+
         // Protocol parser — ym2151 style
         if (scci_parse_idx == 0) {
             if (uart_data == 0xFF) {
@@ -530,7 +645,6 @@ int main() {
                 gpio_put(PIN_LED, 1);
             } else if (uart_data == 0xFE) {
                 bus_ic_reset();
-                // ym2413_mute_all();  // test: IC# reset only
                 tud_cdc_write("OK", 2);
                 tud_cdc_write_flush();
                 for (int n = 0; n < 2; n++) {
@@ -561,9 +675,10 @@ int main() {
         }
         else if (scci_parse_idx == 2) {
             if (scci_cmd == 0x00) {
-                scci_addr = uart_data;  // cache register address
+                scci_addr = uart_data;
                 scci_parse_idx = 3;
             } else if (scci_cmd == 0x80) {
+                cs_select(scci_slot);
                 ym2413_write_reg(scci_a, uart_data);
                 scci_parse_idx = 0;
             } else if (scci_cmd == 0x20) {
@@ -574,6 +689,7 @@ int main() {
         }
         else if (scci_parse_idx == 3) {
             if (scci_cmd == 0x00) {
+                cs_select(scci_slot);
                 ym2413_write_reg(scci_addr, uart_data);
             }
             scci_parse_idx = 0;

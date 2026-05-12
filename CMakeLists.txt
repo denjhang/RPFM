@@ -21,11 +21,13 @@ add_executable(rpfm_ym2413_test
 
 pico_generate_pio_header(rpfm_ym2413_test ${CMAKE_CURRENT_SOURCE_DIR}/src/ym2413.pio)
 pico_generate_pio_header(rpfm_ym2413_test ${CMAKE_CURRENT_SOURCE_DIR}/src/pio_cs.pio)
+pico_generate_pio_header(rpfm_ym2413_test ${CMAKE_CURRENT_SOURCE_DIR}/src/ws2812.pio)
 
 target_link_libraries(rpfm_ym2413_test PRIVATE
     pico_stdlib
     hardware_gpio
     hardware_pio
+    pico_multicore
 )
 
 # SCCI doesn't set DTR
