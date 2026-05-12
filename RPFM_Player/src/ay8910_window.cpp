@@ -2180,11 +2180,12 @@ void Update() {
             s_bufRetryCount = 0;
             if (s_autoPlayNext && !s_playlist.empty()) PlayPlaylistNext();
         }
-        // Stream failed — auto-retry up to 10 times
+        // Stream failed — auto-retry indefinitely until playback starts
         else {
             s_bufRetryCount++;
-            if (s_bufRetryCount <= 10 && s_vgmLoaded) {
-                DcLog("[VGM-Stream] Auto-retry #%d\n", s_bufRetryCount);
+            if (s_vgmLoaded) {
+                if (s_bufRetryCount % 10 == 1)
+                    DcLog("[VGM-Stream] Auto-retry #%d\n", s_bufRetryCount);
                 Sleep(100);
                 // Re-open device if needed
                 if (!rpfm_hid_is_open()) {
@@ -2197,7 +2198,7 @@ void Update() {
                 s_vgmStreamRunning = true;
                 s_vgmStreamThread = CreateThread(NULL, 0, VGMStreamThread, NULL, 0, NULL);
             } else {
-                DcLog("[VGM-Stream] Gave up after %d retries\n", s_bufRetryCount);
+                DcLog("[VGM-Stream] No file loaded, stopping\n");
                 s_vgmPlaying = false;
                 s_vgmPaused = false;
                 s_bufRetryCount = 0;
