@@ -1649,12 +1649,37 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
         localTotal = (uint32_t)(localData.size() - s_vgmDataOffset);
     }
 
+    if (localTotal == 0) {
+        DcLog("[VGM-Stream] No VGM data to stream\n");
+        s_vgmStreamRunning = false;
+        return 0;
+    }
+
     s_streamSent = 0;
     s_streamTotal = localTotal;
 
     DcLog("[VGM-Stream] Total data: %u bytes\n", localTotal);
 
-    // Send VGM_START with loop offset (relative to data start)
+    // Phase 1: Pre-fill firmware buffer (up to 8KB) before starting timer
+    // This prevents the timer ISR from immediately hitting an empty buffer
+    const uint32_t PREFILL_SIZE = 8192;
+    uint32_t prefillAmount = (localTotal > PREFILL_SIZE) ? PREFILL_SIZE : localTotal;
+    while (s_streamSent < prefillAmount && s_vgmStreamRunning && s_vgmPlaying) {
+        uint32_t remain = prefillAmount - s_streamSent;
+        size_t toSend = (remain > 60) ? 60 : remain;
+        uint16_t newBufLevel = 0;
+        if (!rpfm_send_vgm_data(&localData[localPos], (uint8_t)toSend, &newBufLevel)) {
+            DcLog("[VGM-Stream] Prefill HID send failed\n");
+            s_vgmStreamRunning = false; return 0;
+        }
+        s_bufLevel = newBufLevel;
+        localPos += toSend;
+        s_streamSent += (uint32_t)toSend;
+    }
+
+    DcLog("[VGM-Stream] Prefilled %u bytes, starting playback\n", s_streamSent);
+
+    // Now send VGM_START — timer ISR begins consuming from pre-filled buffer
     uint16_t loopOff = 0;
     if (s_vgmLoopOffset > 0 && s_vgmLoopOffset >= s_vgmDataOffset)
         loopOff = (uint16_t)(s_vgmLoopOffset - s_vgmDataOffset);
@@ -1665,14 +1690,14 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
         return 0;
     }
 
-    bool allDataSent = false;
+    // Phase 2: Continue streaming remaining data
+    bool allDataSent = (s_streamSent >= localTotal);
 
     while (s_vgmStreamRunning && s_vgmPlaying) {
         if (s_vgmPaused) { Sleep(10); continue; }
 
         // Backpressure: wait if firmware buffer is >50% full
         if (s_bufLevel > s_bufTotal / 2) {
-            // Query buf_level via NOP to keep GUI updated
             uint8_t dummy = 0;
             uint16_t newLevel = 0;
             if (rpfm_send_vgm_data(&dummy, 0, &newLevel))
@@ -1682,26 +1707,20 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
         }
 
         if (!allDataSent) {
-            // Send up to 60 bytes
-            uint8_t buf[60];
-            uint32_t remain = localTotal - (uint32_t)localPos + s_vgmDataOffset;
-            remain = localTotal - s_streamSent;
+            uint32_t remain = localTotal - s_streamSent;
             if (remain == 0) {
                 allDataSent = true;
                 DcLog("[VGM-Stream] All %u bytes sent, waiting for firmware to finish\n", s_streamSent);
-                // Don't break — keep querying buf_level until firmware stops
             } else {
-                size_t toRead = (remain > 60) ? 60 : remain;
-                memcpy(buf, &localData[localPos], toRead);
-                localPos += toRead;
-
+                size_t toSend = (remain > 60) ? 60 : remain;
                 uint16_t newBufLevel = 0;
-                if (!rpfm_send_vgm_data(buf, (uint8_t)toRead, &newBufLevel)) {
+                if (!rpfm_send_vgm_data(&localData[localPos], (uint8_t)toSend, &newBufLevel)) {
                     DcLog("[VGM-Stream] HID send failed\n");
                     break;
                 }
                 s_bufLevel = newBufLevel;
-                s_streamSent += (uint32_t)toRead;
+                localPos += toSend;
+                s_streamSent += (uint32_t)toSend;
 
                 if (s_streamTotal > 0) {
                     s_vgmCurrentSamples = (UINT32)((double)s_vgmTotalSamples * s_streamSent / s_streamTotal);
@@ -1710,7 +1729,7 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
         }
 
         if (allDataSent) {
-            // Poll firmware status: check if buffer drained (buf_level == 0 means done)
+            // Poll firmware buffer: if drained, playback is complete
             uint8_t dummy = 0;
             uint16_t newLevel = 0;
             if (rpfm_send_vgm_data(&dummy, 0, &newLevel))
@@ -1851,7 +1870,9 @@ static void StartVGMPlayback(void) {
     s_vgmLoopCount = 0;
 
     if (s_playbackMode == 1) {
-        // Buffered mode: VGMStreamThread handles file loading and streaming
+        // Buffered mode: stop firmware VGM player and clear buffer first
+        if (s_connected) rpfm_vgm_stop();
+        // VGMStreamThread handles file loading and streaming
         s_bufLevel = 0;
         s_streamSent = 0;
         s_streamTotal = 0;
@@ -2125,7 +2146,9 @@ void Update() {
     }
 
     // Buffered mode: detect stream thread finished
-    if (s_playbackMode == 1 && s_vgmPlaying && !s_vgmStreamRunning && s_vgmStreamThread) {
+    // Only check after stream has actually started sending data (s_streamTotal > 0)
+    if (s_playbackMode == 1 && s_vgmPlaying && !s_vgmStreamRunning
+        && s_vgmStreamThread && s_streamTotal > 0) {
         WaitForSingleObject(s_vgmStreamThread, 2000);
         CloseHandle(s_vgmStreamThread);
         s_vgmStreamThread = nullptr;
