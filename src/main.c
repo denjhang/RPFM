@@ -74,12 +74,12 @@ static bool s_ws_ready = false;
 static bool s_ws_led_pending = false;
 static uint32_t s_ws_leds[NUM_WS_LEDS] = {0};
 
-// CS LED colors (urgb format, half brightness): CS0=green, CS1=blue, CS2=yellow, CS3=red
+// CS LED colors (urgb format, 40% brightness): CS0=red, CS1=blue, CS2=yellow, CS3=green
 static const uint32_t cs_colors[NUM_WS_LEDS] = {
-    0x006600, // dim green
-    0x000066, // dim blue
-    0x666600, // dim yellow
-    0x660000, // dim red
+    0x006600, // CS0 red    (R=0x66)
+    0x000066, // CS1 blue   (B=0x66)
+    0x666600, // CS2 yellow (R=0x66, G=0x66)
+    0x660000, // CS3 green  (G=0x66)
 };
 
 // ========== PIO Bus Driver (14-bit) ==========
