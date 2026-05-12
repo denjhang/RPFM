@@ -1297,9 +1297,11 @@ static void ParseGD3Tags(FILE* f, UINT32 offset) {
     if (s_artistName.empty() && !artJp.empty()) s_artistName = artJp;
 }
 
+static void StopVGMPlayback(void);
+
 static bool LoadVGMFile(const char* path) {
     StopTest();
-    if (s_vgmPlaying) { s_vgmPlaying = false; s_vgmPaused = false; }
+    StopVGMPlayback();
     if (s_vgmFile) { fclose(s_vgmFile); s_vgmFile = nullptr; }
     s_memData.clear();
     s_memData.shrink_to_fit();
@@ -1870,9 +1872,7 @@ static void StartVGMPlayback(void) {
     s_vgmLoopCount = 0;
 
     if (s_playbackMode == 1) {
-        // Buffered mode: stop firmware VGM player and clear buffer first
-        if (s_connected) rpfm_vgm_stop();
-        // VGMStreamThread handles file loading and streaming
+        // Buffered mode: VGMStreamThread handles file loading and streaming
         s_bufLevel = 0;
         s_streamSent = 0;
         s_streamTotal = 0;
@@ -1908,7 +1908,8 @@ static void StopVGMPlayback(void) {
         CloseHandle(s_vgmStreamThread);
         s_vgmStreamThread = nullptr;
     }
-    if (s_playbackMode == 1 && s_connected) {
+    // Always stop firmware VGM player and clear buffer when connected
+    if (s_connected) {
         rpfm_vgm_stop();
     }
     if (s_connected) InitHardware();
@@ -2154,8 +2155,12 @@ void Update() {
         s_vgmStreamThread = nullptr;
         s_vgmPlaying = false;
         s_vgmPaused = false;
-        s_vgmTrackEnded = true;
-        if (s_autoPlayNext && !s_playlist.empty()) PlayPlaylistNext();
+        // Only auto-next if thread exited normally (all data sent and consumed)
+        // Don't auto-next on early failures (prefill error, HID send failure, etc.)
+        if (s_streamSent >= s_streamTotal) {
+            s_vgmTrackEnded = true;
+            if (s_autoPlayNext && !s_playlist.empty()) PlayPlaylistNext();
+        }
     }
 
     // Update scope voice channel offsets
