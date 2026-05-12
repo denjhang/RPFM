@@ -1727,19 +1727,13 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
     // Phase 2: Continue streaming remaining data
     bool allDataSent = (s_streamSent >= localTotal);
     int queryCounter = 0;
+    DcLog("[VGM-Stream] Entering stream loop, remaining=%u bytes\n", localTotal - s_streamSent);
 
     while (s_vgmStreamRunning && s_vgmPlaying) {
         if (s_vgmPaused) { Sleep(10); continue; }
 
-        // Backpressure: query buf_level every 16 frames to avoid HID blocking
+        // Backpressure: wait if firmware buffer is >50% full
         if (s_bufLevel > s_bufTotal / 2) {
-            if (++queryCounter >= 16) {
-                queryCounter = 0;
-                uint8_t dummy = 0;
-                uint16_t newLevel = 0;
-                if (rpfm_send_vgm_data(&dummy, 0, &newLevel))
-                    s_bufLevel = newLevel;
-            }
             Sleep(1);
             continue;
         }
@@ -1751,12 +1745,17 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
                 DcLog("[VGM-Stream] All %u bytes sent, waiting for firmware to finish\n", s_streamSent);
             } else {
                 size_t toSend = (remain > 60) ? 60 : remain;
-                // Only read buf_level every 16 frames
-                uint16_t *pLevel = (++queryCounter % 16 == 0) ? &s_bufLevel : nullptr;
-                uint16_t dummyLevel = 0;
-                if (!pLevel) pLevel = &dummyLevel;
-                if (!rpfm_send_vgm_data(&localData[localPos], (uint8_t)toSend, pLevel)) {
-                    DcLog("[VGM-Stream] HID send failed\n");
+                // Send with retry — HID may be busy, don't give up
+                bool sent = false;
+                for (int retry = 0; retry < 10 && s_vgmStreamRunning && s_vgmPlaying; retry++) {
+                    if (rpfm_send_vgm_data(&localData[localPos], (uint8_t)toSend, nullptr)) {
+                        sent = true;
+                        break;
+                    }
+                    Sleep(5);
+                }
+                if (!sent) {
+                    DcLog("[VGM-Stream] HID send failed after retries\n");
                     break;
                 }
                 localPos += toSend;
