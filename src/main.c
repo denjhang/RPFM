@@ -72,15 +72,14 @@ static PIO s_ws_pio = pio1;
 static uint s_ws_sm = 0;
 static bool s_ws_ready = false;
 static bool s_ws_led_pending = false;
-static uint8_t s_ws_led_pending_slot = 0;
 static uint32_t s_ws_leds[NUM_WS_LEDS] = {0};
 
-// CS LED colors (urgb format): CS0=green, CS1=blue, CS2=yellow, CS3=red
+// CS LED colors (urgb format, half brightness): CS0=green, CS1=blue, CS2=yellow, CS3=red
 static const uint32_t cs_colors[NUM_WS_LEDS] = {
-    0x00FF00, // green
-    0x0000FF, // blue
-    0xFFFF00, // yellow
-    0xFF0000, // red
+    0x006600, // dim green
+    0x000066, // dim blue
+    0x666600, // dim yellow
+    0x660000, // dim red
 };
 
 // ========== PIO Bus Driver (14-bit) ==========
@@ -134,7 +133,6 @@ static inline void cs_deselect_all(void) {
 // ========== WS2812 LED Driver ==========
 
 static inline void ws_led_off_all(void);
-static inline void ws2812_update(void);
 
 static inline uint32_t urgb_u32(uint8_t r, uint8_t g, uint8_t b) {
     return ((uint32_t)g << 16) | ((uint32_t)r << 8) | (uint32_t)b;
@@ -151,6 +149,7 @@ static void ws2812_init(void) {
     ws_led_off_all();
 }
 
+// Send all 4 pixels to WS2812 (must always send complete frame)
 static void ws2812_update(void) {
     for (int i = 0; i < NUM_WS_LEDS; i++) {
         pio_sm_put_blocking(s_ws_pio, s_ws_sm, s_ws_leds[i] << 8u);
@@ -161,18 +160,11 @@ static inline void ws_led_on(uint8_t slot) {
     s_ws_leds[slot] = cs_colors[slot];
     ws2812_update();
     s_ws_led_pending = true;
-    s_ws_led_pending_slot = slot;
-}
-
-static inline void ws_led_off(uint8_t slot) {
-    s_ws_leds[slot] = 0;
-    ws2812_update();
 }
 
 static inline void ws_led_off_all(void) {
-    for (int i = 0; i < NUM_WS_LEDS; i++) {
-        pio_sm_put_blocking(s_ws_pio, s_ws_sm, 0);
-    }
+    for (int i = 0; i < NUM_WS_LEDS; i++) s_ws_leds[i] = 0;
+    ws2812_update();
 }
 
 // ========== YM2413 Write (bus + CS combined) ==========
@@ -423,12 +415,27 @@ int main() {
     ws2812_init();
     s_ws_ready = true;
 
-    // Select CS0# (YM2413) before reset
-    cs_select(0);
+    // WS2812 startup: dim rainbow chase then off
+    static const uint32_t rainbow[] = {
+        0x100000, // dim red
+        0x101000, // dim yellow
+        0x001000, // dim green
+        0x001010, // dim cyan
+        0x000010, // dim blue
+        0x100010, // dim purple
+    };
+    for (int c = 0; c < 6; c++) {
+        for (int i = 0; i < NUM_WS_LEDS; i++) {
+            int idx = (c + i) % 6;
+            s_ws_leds[i] = rainbow[idx];
+        }
+        ws2812_update();
+        sleep_ms(80);
+    }
+    ws_led_off_all();
 
-    printf("Resetting YM2413...\n");
-    ym2413_reset();
-    ym2413_mute_all();
+    // Enable WS2812 CS indicator
+    s_ws_ready = true;
 
     for (int i = 0; i < 3; i++) {
         gpio_put(PIN_LED, 1);
@@ -481,7 +488,7 @@ int main() {
         // WS2812 CS LED: auto off after 1ms
         if (s_ws_led_pending) {
             s_ws_led_pending = false;
-            ws_led_timeout = make_timeout_time_ms(100);
+            ws_led_timeout = make_timeout_time_ms(10);
             ws_led_timed = true;
         } else if (ws_led_timed && time_reached(ws_led_timeout)) {
             ws_led_off_all();
@@ -504,6 +511,14 @@ int main() {
             if (uart_data == 0xFF) {
                 tud_cdc_write("RS", 2);
                 tud_cdc_write_flush();
+                // WS2812 handshake: short blink x2
+                for (int n = 0; n < 2; n++) {
+                    for (int i = 0; i < NUM_WS_LEDS; i++) s_ws_leds[i] = cs_colors[i];
+                    ws2812_update();
+                    sleep_ms(50);
+                    ws_led_off_all();
+                    sleep_ms(50);
+                }
                 led_data_active = true;
                 led_data_timeout = make_timeout_time_ms(1);
                 gpio_put(PIN_LED, 1);
@@ -512,6 +527,13 @@ int main() {
                 ym2413_mute_all();
                 tud_cdc_write("OK", 2);
                 tud_cdc_write_flush();
+                for (int n = 0; n < 2; n++) {
+                    for (int i = 0; i < NUM_WS_LEDS; i++) s_ws_leds[i] = cs_colors[i];
+                    ws2812_update();
+                    sleep_ms(50);
+                    ws_led_off_all();
+                    sleep_ms(50);
+                }
                 led_data_active = true;
                 led_data_timeout = make_timeout_time_ms(1);
                 gpio_put(PIN_LED, 1);
