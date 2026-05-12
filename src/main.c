@@ -22,6 +22,7 @@
  *   CPU-controlled:
  *     GPIO21   -> IC#     (reset, active low, power-on only)
  *     GPIO25   -> LED     (heartbeat)
+ *     GPIO16   -> WS2812  (4x RGB, CS activity indicator)
  *     GND      -> GND     (must be connected!)
  */
 
@@ -34,6 +35,7 @@
 #include "pico/bootrom.h"
 #include "ym2413.pio.h"
 #include "pio_cs.pio.h"
+#include "ws2812.pio.h"
 #include "tusb.h"
 
 // ========== Pin Definitions ==========
@@ -47,6 +49,11 @@
 // CPU-controlled:
 #define PIN_IC   21
 #define PIN_LED  25
+#define PIN_WS2812 16
+
+// WS2812
+#define NUM_WS_LEDS  4
+#define WS_FREQ      8000000
 
 // ========== YM2413 Constants ==========
 
@@ -59,6 +66,22 @@ static PIO s_bus_pio = pio0;
 static uint s_bus_sm = 0;
 static PIO s_cs_pio = pio1;
 static uint s_cs_sm = 0;
+
+// WS2812
+static PIO s_ws_pio = pio1;
+static uint s_ws_sm = 0;
+static bool s_ws_ready = false;
+static bool s_ws_led_pending = false;
+static uint8_t s_ws_led_pending_slot = 0;
+static uint32_t s_ws_leds[NUM_WS_LEDS] = {0};
+
+// CS LED colors (urgb format): CS0=green, CS1=blue, CS2=yellow, CS3=red
+static const uint32_t cs_colors[NUM_WS_LEDS] = {
+    0x00FF00, // green
+    0x0000FF, // blue
+    0xFFFF00, // yellow
+    0xFF0000, // red
+};
 
 // ========== PIO Bus Driver (14-bit) ==========
 
@@ -108,10 +131,57 @@ static inline void cs_deselect_all(void) {
     pio_cs_put(s_cs_pio, s_cs_sm, CS_IDLE);
 }
 
+// ========== WS2812 LED Driver ==========
+
+static inline void ws_led_off_all(void);
+static inline void ws2812_update(void);
+
+static inline uint32_t urgb_u32(uint8_t r, uint8_t g, uint8_t b) {
+    return ((uint32_t)g << 16) | ((uint32_t)r << 8) | (uint32_t)b;
+}
+
+static void ws2812_init(void) {
+    printf("  WS2812: adding program...\n");
+    uint offset = pio_add_program(s_ws_pio, &ws2812_program);
+    printf("  WS2812: program loaded at offset %u\n", offset);
+    s_ws_sm = pio_claim_unused_sm(s_ws_pio, true);
+    printf("  WS2812: claimed SM %u\n", s_ws_sm);
+    ws2812_program_init(s_ws_pio, s_ws_sm, offset, PIN_WS2812, 800000, false);
+    printf("  WS2812: SM initialized, enabled\n");
+    ws_led_off_all();
+}
+
+static void ws2812_update(void) {
+    for (int i = 0; i < NUM_WS_LEDS; i++) {
+        pio_sm_put_blocking(s_ws_pio, s_ws_sm, s_ws_leds[i] << 8u);
+    }
+}
+
+static inline void ws_led_on(uint8_t slot) {
+    s_ws_leds[slot] = cs_colors[slot];
+    ws2812_update();
+    s_ws_led_pending = true;
+    s_ws_led_pending_slot = slot;
+}
+
+static inline void ws_led_off(uint8_t slot) {
+    s_ws_leds[slot] = 0;
+    ws2812_update();
+}
+
+static inline void ws_led_off_all(void) {
+    for (int i = 0; i < NUM_WS_LEDS; i++) {
+        pio_sm_put_blocking(s_ws_pio, s_ws_sm, 0);
+    }
+}
+
 // ========== YM2413 Write (bus + CS combined) ==========
 
 static inline void ym2413_write_reg(uint8_t reg, uint8_t data) {
-    // CS0# is slot 0
+    // CS0# is slot 0, flash WS2812 LED
+    if (s_ws_ready) {
+        ws_led_on(0);
+    }
     ym2413_pio_write_reg(s_bus_pio, s_bus_sm, reg, data);
 }
 
@@ -349,6 +419,10 @@ int main() {
     printf("Initializing PIO CS (4-bit)...\n");
     pio_cs_init();
 
+    printf("Initializing WS2812...\n");
+    ws2812_init();
+    s_ws_ready = true;
+
     // Select CS0# (YM2413) before reset
     cs_select(0);
 
@@ -379,6 +453,10 @@ int main() {
     bool led_data_active = false;
     absolute_time_t led_data_timeout = nil_time;
 
+    // WS2812 CS activity LED timeout
+    absolute_time_t ws_led_timeout = nil_time;
+    bool ws_led_timed = false;
+
     while (true) {
         // Frame sync timeout
         if (--uart_idle_cnt == 0) {
@@ -398,6 +476,16 @@ int main() {
                 gpio_put(PIN_LED, led_state);
                 led_next = make_timeout_time_ms(500);
             }
+        }
+
+        // WS2812 CS LED: auto off after 1ms
+        if (s_ws_led_pending) {
+            s_ws_led_pending = false;
+            ws_led_timeout = make_timeout_time_ms(100);
+            ws_led_timed = true;
+        } else if (ws_led_timed && time_reached(ws_led_timeout)) {
+            ws_led_off_all();
+            ws_led_timed = false;
         }
 
         // Read one byte
