@@ -1625,6 +1625,7 @@ static bool DoFadeoutUpdate(void) {
 
 // Buffered mode: stream raw VGM bytes to firmware via CMD_VGM_DATA
 static DWORD WINAPI VGMStreamThread(LPVOID) {
+    DcLog("[VGM-Stream] Thread started\n");
     // Use local copy of VGM data — don't touch shared s_vgmFile/s_memPos
     std::vector<UINT8> localData;
     size_t localPos = 0;
@@ -1694,20 +1695,33 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
     if (s_vgmLoopOffset > 0 && s_vgmLoopOffset >= s_vgmDataOffset)
         loopOff = (uint16_t)(s_vgmLoopOffset - s_vgmDataOffset);
 
-    // Retry VGM_START — pass NULL status to skip response read (avoids HID blocking)
-    bool started = false;
-    for (int retry = 0; retry < 5 && s_vgmStreamRunning && s_vgmPlaying; retry++) {
-        if (rpfm_vgm_start(loopOff, NULL)) {
-            started = true;
-            break;
-        }
-        DcLog("[VGM-Stream] VGM start retry %d\n", retry + 1);
-        Sleep(50);
-    }
-    if (!started) {
-        DcLog("[VGM-Stream] VGM start failed after retries\n");
+    // Send VGM_START (no response read to avoid blocking)
+    if (!rpfm_vgm_start(loopOff, NULL)) {
+        DcLog("[VGM-Stream] VGM start send failed\n");
         s_vgmStreamRunning = false;
         return 0;
+    }
+
+    // Wait for firmware to confirm STATUS_PLAYING (up to 3 seconds)
+    {
+        uint8_t fwStatus = 0;
+        bool confirmed = false;
+        for (int i = 0; i < 30 && s_vgmStreamRunning && s_vgmPlaying; i++) {
+            Sleep(100);
+            if (rpfm_query_status(&fwStatus, &s_bufLevel)) {
+                if (fwStatus & 0x01) { // STATUS_PLAYING
+                    confirmed = true;
+                    DcLog("[VGM-Stream] Firmware confirmed playing (status=0x%02X buf=%u)\n",
+                        fwStatus, s_bufLevel);
+                    break;
+                }
+            }
+        }
+        if (!confirmed) {
+            DcLog("[VGM-Stream] Firmware never confirmed playing (status=0x%02X)\n", fwStatus);
+            s_vgmStreamRunning = false;
+            return 0;
+        }
     }
 
     // Phase 2: Continue streaming remaining data
@@ -2172,52 +2186,67 @@ void Update() {
 
     // Buffered mode: detect stream thread finished
     static int s_bufRetryCount = 0;
-    if (s_playbackMode == 1 && s_vgmPlaying && !s_vgmStreamRunning
-        && s_vgmStreamThread) {
-        WaitForSingleObject(s_vgmStreamThread, 2000);
-        CloseHandle(s_vgmStreamThread);
-        s_vgmStreamThread = nullptr;
+    static UINT32 s_lastRetrySamples = 0;
+    if (s_playbackMode == 1 && s_vgmPlaying) {
+        // Clean up finished thread
+        if (!s_vgmStreamRunning && s_vgmStreamThread) {
+            WaitForSingleObject(s_vgmStreamThread, 2000);
+            CloseHandle(s_vgmStreamThread);
+            s_vgmStreamThread = nullptr;
 
-        DcLog("[VGM-Stream] Thread done: sent=%u total=%u samples=%u\n",
-            s_streamSent, s_streamTotal, s_vgmCurrentSamples);
+            DcLog("[VGM-Stream] Thread done: sent=%u total=%u samples=%u\n",
+                s_streamSent, s_streamTotal, s_vgmCurrentSamples);
 
-        // Track completed normally (data fully sent AND some progress made)
-        if (s_streamSent >= s_streamTotal && s_streamTotal > 0 && s_vgmCurrentSamples > 0) {
-            s_vgmPlaying = false;
-            s_vgmPaused = false;
-            s_vgmTrackEnded = true;
-            s_bufRetryCount = 0;
-            if (s_autoPlayNext && !s_playlist.empty()) PlayPlaylistNext();
-        }
-        // Stream failed or stalled — auto-retry indefinitely
-        else {
-            s_bufRetryCount++;
-            if (s_vgmLoaded) {
-                DcLog("[VGM-Stream] Auto-retry #%d (sent=%u/%u samples=%u)\n",
-                    s_bufRetryCount, s_streamSent, s_streamTotal, s_vgmCurrentSamples);
+            // Track completed normally
+            if (s_streamSent >= s_streamTotal && s_streamTotal > 0 && s_vgmCurrentSamples > 0) {
+                s_vgmPlaying = false;
+                s_vgmPaused = false;
+                s_vgmTrackEnded = true;
+                s_bufRetryCount = 0;
+                if (s_autoPlayNext && !s_playlist.empty()) PlayPlaylistNext();
+            }
+            // Thread exited without completing — auto-retry
+            else if (s_vgmLoaded) {
+                s_bufRetryCount++;
+                DcLog("[VGM-Stream] Auto-retry #%d\n", s_bufRetryCount);
                 Sleep(100);
-                // Re-open device if needed
-                if (!rpfm_hid_is_open()) {
-                    rpfm_hid_open();
-                    s_connected = rpfm_hid_is_open();
-                }
-                // Send stop to clear firmware state
+                if (!rpfm_hid_is_open()) { rpfm_hid_open(); s_connected = rpfm_hid_is_open(); }
                 if (s_connected) rpfm_vgm_stop();
-                s_bufLevel = 0;
-                s_streamSent = 0;
-                s_streamTotal = 0;
-                s_vgmCurrentSamples = 0;
+                s_bufLevel = 0; s_streamSent = 0; s_streamTotal = 0; s_vgmCurrentSamples = 0;
+                s_lastRetrySamples = 0;
                 s_vgmStreamRunning = true;
                 s_vgmStreamThread = CreateThread(NULL, 0, VGMStreamThread, NULL, 0, NULL);
             } else {
-                DcLog("[VGM-Stream] No file loaded, stopping\n");
-                s_vgmPlaying = false;
-                s_vgmPaused = false;
-                s_bufRetryCount = 0;
+                s_vgmPlaying = false; s_vgmPaused = false; s_bufRetryCount = 0;
+            }
+        }
+        // Thread still running but stalled (no progress for 3 seconds) — kill and retry
+        else if (s_vgmStreamRunning && s_vgmStreamThread) {
+            if (s_vgmCurrentSamples == s_lastRetrySamples && s_streamTotal > 0) {
+                static int s_stallFrames = 0;
+                if (++s_stallFrames > 180) { // ~3 seconds at 60fps
+                    s_stallFrames = 0;
+                    DcLog("[VGM-Stream] Stalled (samples=%u stuck), restarting\n", s_vgmCurrentSamples);
+                    s_vgmStreamRunning = false;
+                    WaitForSingleObject(s_vgmStreamThread, 2000);
+                    CloseHandle(s_vgmStreamThread);
+                    s_vgmStreamThread = nullptr;
+                    s_bufRetryCount++;
+                    if (!rpfm_hid_is_open()) { rpfm_hid_open(); s_connected = rpfm_hid_is_open(); }
+                    if (s_connected) rpfm_vgm_stop();
+                    s_bufLevel = 0; s_streamSent = 0; s_streamTotal = 0; s_vgmCurrentSamples = 0;
+                    s_lastRetrySamples = 0;
+                    s_vgmStreamRunning = true;
+                    s_vgmStreamThread = CreateThread(NULL, 0, VGMStreamThread, NULL, 0, NULL);
+                }
+            } else {
+                s_lastRetrySamples = s_vgmCurrentSamples;
+                static int s_stallFrames = 0;
+                s_stallFrames = 0;
             }
         }
     }
-    // Reset retry counter when playback is progressing
+    // Reset retry counter when playback is progressing well
     if (s_playbackMode == 1 && s_vgmPlaying && s_vgmCurrentSamples > 44100) {
         s_bufRetryCount = 0;
     }

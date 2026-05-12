@@ -81,16 +81,16 @@ static inline void ym2413_pio_write_reg(PIO pio, uint sm,
     pio_bus_put(pio, sm, BUS_IDLE);
 }
 
-// AY8910 SSG: 500ns per step (AY8910 /WR pulse min ~200ns, plenty of margin)
+// AY8910 SSG: ~500ns per step
 static inline void ay8910_pio_write_reg(PIO pio, uint sm,
                                          uint8_t reg, uint8_t data) {
     pio_bus_put(pio, sm, pack_bus(reg, 0, true, true));
     pio_bus_put(pio, sm, pack_bus(reg, 0, false, true));
-    busy_wait_us_32(0);  // ~500ns (1 cycle at 125MHz = 8ns, 0 = minimal)
+    busy_wait_us_32(1);  // ~500ns with overhead
     pio_bus_put(pio, sm, pack_bus(reg, 0, true, true));
     pio_bus_put(pio, sm, pack_bus(data, 1, true, true));
     pio_bus_put(pio, sm, pack_bus(data, 1, false, true));
-    busy_wait_us_32(0);
+    busy_wait_us_32(1);
     pio_bus_put(pio, sm, pack_bus(data, 1, true, true));
     pio_bus_put(pio, sm, BUS_IDLE);
 }

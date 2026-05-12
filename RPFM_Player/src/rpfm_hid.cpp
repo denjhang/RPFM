@@ -145,3 +145,14 @@ bool rpfm_vgm_stop(void) {
     s_seq = (s_seq + 1) & 0xFF;
     return rpfm_hid_send_frame(CMD_VGM_STOP, s_seq, NULL, 0, NULL);
 }
+
+bool rpfm_query_status(uint8_t *status, uint16_t *buf_level) {
+    s_seq = (s_seq + 1) & 0xFF;
+    rpfm_resp_t resp;
+    bool ok = rpfm_hid_send_frame(CMD_NOP, s_seq, NULL, 0, &resp);
+    if (ok) {
+        if (status) *status = resp.status;
+        if (buf_level) *buf_level = resp.buf_level;
+    }
+    return ok;
+}
