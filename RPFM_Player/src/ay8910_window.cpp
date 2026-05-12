@@ -1670,7 +1670,15 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
         uint32_t remain = prefillAmount - s_streamSent;
         size_t toSend = (remain > 60) ? 60 : remain;
         uint16_t newBufLevel = 0;
-        if (!rpfm_send_vgm_data(&localData[localPos], (uint8_t)toSend, &newBufLevel)) {
+        bool sent = false;
+        for (int retry = 0; retry < 3 && s_vgmStreamRunning && s_vgmPlaying; retry++) {
+            if (rpfm_send_vgm_data(&localData[localPos], (uint8_t)toSend, &newBufLevel)) {
+                sent = true;
+                break;
+            }
+            Sleep(10);
+        }
+        if (!sent) {
             DcLog("[VGM-Stream] Prefill HID send failed\n");
             s_vgmStreamRunning = false; return 0;
         }
@@ -1686,8 +1694,18 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
     if (s_vgmLoopOffset > 0 && s_vgmLoopOffset >= s_vgmDataOffset)
         loopOff = (uint16_t)(s_vgmLoopOffset - s_vgmDataOffset);
 
-    if (!rpfm_vgm_start(loopOff, NULL)) {
-        DcLog("[VGM-Stream] VGM start failed\n");
+    // Retry VGM_START a few times — device may need a moment after VGM_STOP
+    bool started = false;
+    for (int retry = 0; retry < 5 && s_vgmStreamRunning && s_vgmPlaying; retry++) {
+        if (rpfm_vgm_start(loopOff, NULL)) {
+            started = true;
+            break;
+        }
+        DcLog("[VGM-Stream] VGM start retry %d\n", retry + 1);
+        Sleep(50);
+    }
+    if (!started) {
+        DcLog("[VGM-Stream] VGM start failed after retries\n");
         s_vgmStreamRunning = false;
         return 0;
     }
