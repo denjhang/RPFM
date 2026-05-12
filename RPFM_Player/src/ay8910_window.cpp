@@ -2165,20 +2165,48 @@ void Update() {
     }
 
     // Buffered mode: detect stream thread finished
-    // Only check after stream has actually started sending data (s_streamTotal > 0)
+    static int s_bufRetryCount = 0;
     if (s_playbackMode == 1 && s_vgmPlaying && !s_vgmStreamRunning
-        && s_vgmStreamThread && s_streamTotal > 0) {
+        && s_vgmStreamThread) {
         WaitForSingleObject(s_vgmStreamThread, 2000);
         CloseHandle(s_vgmStreamThread);
         s_vgmStreamThread = nullptr;
-        s_vgmPlaying = false;
-        s_vgmPaused = false;
-        // Only auto-next if thread exited normally (all data sent and consumed)
-        // Don't auto-next on early failures (prefill error, HID send failure, etc.)
-        if (s_streamSent >= s_streamTotal) {
+
+        // Track completed normally
+        if (s_streamSent >= s_streamTotal && s_streamTotal > 0) {
+            s_vgmPlaying = false;
+            s_vgmPaused = false;
             s_vgmTrackEnded = true;
+            s_bufRetryCount = 0;
             if (s_autoPlayNext && !s_playlist.empty()) PlayPlaylistNext();
         }
+        // Stream failed — auto-retry up to 10 times
+        else {
+            s_bufRetryCount++;
+            if (s_bufRetryCount <= 10 && s_vgmLoaded) {
+                DcLog("[VGM-Stream] Auto-retry #%d\n", s_bufRetryCount);
+                Sleep(100);
+                // Re-open device if needed
+                if (!rpfm_hid_is_open()) {
+                    rpfm_hid_open();
+                    s_connected = rpfm_hid_is_open();
+                }
+                s_bufLevel = 0;
+                s_streamSent = 0;
+                s_streamTotal = 0;
+                s_vgmStreamRunning = true;
+                s_vgmStreamThread = CreateThread(NULL, 0, VGMStreamThread, NULL, 0, NULL);
+            } else {
+                DcLog("[VGM-Stream] Gave up after %d retries\n", s_bufRetryCount);
+                s_vgmPlaying = false;
+                s_vgmPaused = false;
+                s_bufRetryCount = 0;
+            }
+        }
+    }
+    // Reset retry counter when playback is progressing
+    if (s_playbackMode == 1 && s_vgmPlaying && s_vgmCurrentSamples > 44100) {
+        s_bufRetryCount = 0;
     }
 
     // Update scope voice channel offsets
