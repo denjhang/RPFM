@@ -180,11 +180,11 @@ static inline void ym2413_write_reg(uint8_t reg, uint8_t data) {
 
 // ========== YM2413 Control Functions ==========
 
-static void ym2413_reset(void) {
+static void bus_ic_reset(void) {
     gpio_put(PIN_IC, 0);
-    sleep_ms(1);
+    sleep_ms(50);  // IC# low for ~50ms (datasheet: tRC几十ms)
     gpio_put(PIN_IC, 1);
-    sleep_ms(10);
+    sleep_ms(50);
 }
 
 static void ym2413_mute_all(void) {
@@ -437,8 +437,8 @@ int main() {
 
     // Select CS0# and reset YM2413
     cs_select(0);
-    ym2413_reset();
-    ym2413_mute_all();
+    bus_ic_reset();
+    // ym2413_mute_all();  // test: IC# reset only, like reference firmware
 
     // Enable WS2812 CS indicator after init
     s_ws_ready = true;
@@ -529,8 +529,8 @@ int main() {
                 led_data_timeout = make_timeout_time_ms(1);
                 gpio_put(PIN_LED, 1);
             } else if (uart_data == 0xFE) {
-                ym2413_reset();
-                ym2413_mute_all();
+                bus_ic_reset();
+                // ym2413_mute_all();  // test: IC# reset only
                 tud_cdc_write("OK", 2);
                 tud_cdc_write_flush();
                 for (int n = 0; n < 2; n++) {
