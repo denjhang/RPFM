@@ -1623,65 +1623,103 @@ static bool DoFadeoutUpdate(void) {
 
 // Buffered mode: stream raw VGM bytes to firmware via CMD_VGM_DATA
 static DWORD WINAPI VGMStreamThread(LPVOID) {
-    s_streamSent = 0;
+    // Use local copy of VGM data — don't touch shared s_vgmFile/s_memPos
+    std::vector<UINT8> localData;
+    size_t localPos = 0;
+    uint32_t localTotal = 0;
 
-    // Open VGM file and seek to data offset
-    if (s_memData.empty()) {
-        if (s_vgmFile) fclose(s_vgmFile);
-        s_vgmFile = ym_fopen(s_vgmPath, "rb");
-        if (!s_vgmFile) { s_vgmStreamRunning = false; return 0; }
-        vgmfseek(s_vgmFile, s_vgmDataOffset, SEEK_SET);
+    if (!s_memData.empty()) {
+        // Copy from already-decompressed memory
+        localData = s_memData;
+        localPos = s_vgmDataOffset;
+        localTotal = (uint32_t)(localData.size() - s_vgmDataOffset);
     } else {
-        s_memPos = s_vgmDataOffset;
+        // Read entire file into local buffer
+        FILE* f = ym_fopen(s_vgmPath, "rb");
+        if (!f) { s_vgmStreamRunning = false; return 0; }
+        fseek(f, 0, SEEK_END);
+        long fsize = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        localData.resize(fsize);
+        if ((long)fread(localData.data(), 1, fsize, f) != fsize) {
+            fclose(f); s_vgmStreamRunning = false; return 0;
+        }
+        fclose(f);
+        localPos = s_vgmDataOffset;
+        localTotal = (uint32_t)(localData.size() - s_vgmDataOffset);
     }
+
+    s_streamSent = 0;
+    s_streamTotal = localTotal;
+
+    DcLog("[VGM-Stream] Total data: %u bytes\n", localTotal);
 
     // Send VGM_START with loop offset (relative to data start)
     uint16_t loopOff = 0;
     if (s_vgmLoopOffset > 0 && s_vgmLoopOffset >= s_vgmDataOffset)
         loopOff = (uint16_t)(s_vgmLoopOffset - s_vgmDataOffset);
 
-    rpfm_vgm_start(loopOff, NULL);
+    if (!rpfm_vgm_start(loopOff, NULL)) {
+        DcLog("[VGM-Stream] VGM start failed\n");
+        s_vgmStreamRunning = false;
+        return 0;
+    }
+
+    bool allDataSent = false;
 
     while (s_vgmStreamRunning && s_vgmPlaying) {
         if (s_vgmPaused) { Sleep(10); continue; }
 
-        // Backpressure: wait if firmware buffer is >75% full
-        if (s_bufLevel > s_bufTotal * 3 / 4) {
+        // Backpressure: wait if firmware buffer is >50% full
+        if (s_bufLevel > s_bufTotal / 2) {
+            // Query buf_level via NOP to keep GUI updated
+            uint8_t dummy = 0;
+            uint16_t newLevel = 0;
+            if (rpfm_send_vgm_data(&dummy, 0, &newLevel))
+                s_bufLevel = newLevel;
             Sleep(1);
             continue;
         }
 
-        // Read up to 60 bytes from VGM data
-        uint8_t buf[60];
-        size_t remain = s_streamTotal - s_streamSent;
-        if (remain == 0) {
-            // All data sent, wait for firmware to finish
-            Sleep(100);
-            // Check if firmware stopped playing
-            break;
-        }
-        size_t toRead = (remain > 60) ? 60 : remain;
-        size_t got;
-        if (!s_memData.empty()) {
-            got = (s_memPos + toRead <= s_memData.size()) ? toRead : (s_memData.size() - s_memPos);
-            memcpy(buf, &s_memData[s_memPos], got);
-            s_memPos += got;
-        } else {
-            got = vgmfread(buf, 1, toRead, s_vgmFile);
-        }
-        if (got == 0) break;
+        if (!allDataSent) {
+            // Send up to 60 bytes
+            uint8_t buf[60];
+            uint32_t remain = localTotal - (uint32_t)localPos + s_vgmDataOffset;
+            remain = localTotal - s_streamSent;
+            if (remain == 0) {
+                allDataSent = true;
+                DcLog("[VGM-Stream] All %u bytes sent, waiting for firmware to finish\n", s_streamSent);
+                // Don't break — keep querying buf_level until firmware stops
+            } else {
+                size_t toRead = (remain > 60) ? 60 : remain;
+                memcpy(buf, &localData[localPos], toRead);
+                localPos += toRead;
 
-        uint16_t newBufLevel = 0;
-        if (!rpfm_send_vgm_data(buf, (uint8_t)got, &newBufLevel)) {
-            DcLog("[VGM-Stream] HID send failed\n");
-            break;
-        }
-        s_bufLevel = newBufLevel;
-        s_streamSent += (uint32_t)got;
+                uint16_t newBufLevel = 0;
+                if (!rpfm_send_vgm_data(buf, (uint8_t)toRead, &newBufLevel)) {
+                    DcLog("[VGM-Stream] HID send failed\n");
+                    break;
+                }
+                s_bufLevel = newBufLevel;
+                s_streamSent += (uint32_t)toRead;
 
-        // Estimate current sample position from stream progress
-        if (s_streamTotal > 0) {
-            s_vgmCurrentSamples = (UINT32)((double)s_vgmTotalSamples * s_streamSent / s_streamTotal);
+                if (s_streamTotal > 0) {
+                    s_vgmCurrentSamples = (UINT32)((double)s_vgmTotalSamples * s_streamSent / s_streamTotal);
+                }
+            }
+        }
+
+        if (allDataSent) {
+            // Poll firmware status: check if buffer drained (buf_level == 0 means done)
+            uint8_t dummy = 0;
+            uint16_t newLevel = 0;
+            if (rpfm_send_vgm_data(&dummy, 0, &newLevel))
+                s_bufLevel = newLevel;
+            if (s_bufLevel == 0) {
+                DcLog("[VGM-Stream] Firmware buffer drained, playback complete\n");
+                break;
+            }
+            Sleep(10);
         }
     }
 
@@ -1813,16 +1851,10 @@ static void StartVGMPlayback(void) {
     s_vgmLoopCount = 0;
 
     if (s_playbackMode == 1) {
-        // Buffered mode: calculate total VGM data size for stream progress
-        if (!s_memData.empty()) {
-            s_streamTotal = (uint32_t)(s_memData.size() - s_vgmDataOffset);
-        } else {
-            FILE* f = ym_fopen(s_vgmPath, "rb");
-            if (f) { fseek(f, 0, SEEK_END); s_streamTotal = (uint32_t)ftell(f) - s_vgmDataOffset; fclose(f); }
-            else s_streamTotal = 0;
-        }
+        // Buffered mode: VGMStreamThread handles file loading and streaming
         s_bufLevel = 0;
         s_streamSent = 0;
+        s_streamTotal = 0;
         s_vgmStreamRunning = true;
         s_vgmStreamThread = CreateThread(NULL, 0, VGMStreamThread, NULL, 0, NULL);
     } else {
