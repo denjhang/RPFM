@@ -157,6 +157,7 @@ static void ws2812_update(void) {
 }
 
 static inline void ws_led_on(uint8_t slot) {
+    if (s_ws_leds[slot] == cs_colors[slot]) return; // already on
     s_ws_leds[slot] = cs_colors[slot];
     ws2812_update();
     s_ws_led_pending = true;
@@ -434,10 +435,8 @@ int main() {
     }
     ws_led_off_all();
 
-    // Select CS0# and reset YM2413
-    cs_select(0);
+    // IC# reset (like all SPFM firmware: only pull IC#, no register writes)
     ym2413_reset();
-    ym2413_mute_all();
 
     // Enable WS2812 CS indicator after init
     s_ws_ready = true;
