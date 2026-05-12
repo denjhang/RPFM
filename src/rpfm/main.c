@@ -31,6 +31,7 @@
 // ========== PIO State ==========
 static PIO s_bus_pio = pio0;
 static uint s_bus_sm = 0;
+static uint s_ay_sm = 0;      // AY8910 dedicated SM (slower clock)
 static PIO s_cs_pio = pio1;
 static uint s_cs_sm = 0;
 static PIO s_ws_pio = pio1;
@@ -86,6 +87,10 @@ static void pio_bus_init(void) {
     uint offset = pio_add_program(s_bus_pio, &spfm_bus_write_program);
     s_bus_sm = pio_claim_unused_sm(s_bus_pio, true);
     spfm_bus_write_program_init(s_bus_pio, s_bus_sm, offset, PIN_BUS_BASE);
+
+    // AY8910 dedicated SM — same program, clock div=32 for ~512ns per word
+    s_ay_sm = pio_claim_unused_sm(s_bus_pio, true);
+    ay8910_sm_init(s_bus_pio, s_ay_sm, offset, PIN_BUS_BASE);
 }
 
 #define CS_IDLE 0x0F
@@ -150,7 +155,7 @@ static inline void write_reg_ym(uint8_t slot, uint8_t addr, uint8_t data) {
 static inline void write_reg_ay(uint8_t slot, uint8_t addr, uint8_t data) {
     cs_select(slot);
     if (s_ws_ready) ws_led_on(slot);
-    ay8910_pio_write_reg(s_bus_pio, s_bus_sm, addr, data);
+    ay8910_pio_write_reg(s_bus_pio, s_ay_sm, addr, data);
 }
 
 // ========== IC# Reset ==========
@@ -296,7 +301,7 @@ int main() {
     pio_cs_init();
     ws2812_init();
     cmd_buf_init(&s_cmd);
-    vgm_player_init(&s_cmd, s_bus_pio, s_bus_sm);
+    vgm_player_init(&s_cmd, s_bus_pio, s_ay_sm);
 
     // Init TinyUSB device stack
     tud_init(BOARD_TUD_RHPORT);

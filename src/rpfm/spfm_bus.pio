@@ -81,17 +81,40 @@ static inline void ym2413_pio_write_reg(PIO pio, uint sm,
     pio_bus_put(pio, sm, BUS_IDLE);
 }
 
-// AY8910 PSG: 1µs per step (ref: MegaGRRL Driver_FmOutpsg)
+// AY8910: non-blocking write via dedicated SM with clock divider
+// Uses same spfm_bus_write program but SM runs at 125MHz/32 ≈ 3.9MHz
+// Each word takes 2 PIO cycles = 512ns, /WR pulse = 512ns
+// 7 words total ≈ 3.6µs per register write
+// ISR just pushes 7 words to FIFO, no busy_wait needed
 static inline void ay8910_pio_write_reg(PIO pio, uint sm,
                                          uint8_t reg, uint8_t data) {
-    pio_bus_put(pio, sm, pack_bus(reg, 0, true, true));
-    pio_bus_put(pio, sm, pack_bus(reg, 0, false, true));
-    busy_wait_us_32(1);
-    pio_bus_put(pio, sm, pack_bus(reg, 0, true, true));
-    pio_bus_put(pio, sm, pack_bus(data, 1, true, true));
-    pio_bus_put(pio, sm, pack_bus(data, 1, false, true));
-    busy_wait_us_32(1);
-    pio_bus_put(pio, sm, pack_bus(data, 1, true, true));
-    pio_bus_put(pio, sm, BUS_IDLE);
+    pio_sm_put_blocking(pio, sm, pack_bus(reg, 0, true, true));   // addr setup
+    pio_sm_put_blocking(pio, sm, pack_bus(reg, 0, false, true));  // addr latch
+    pio_sm_put_blocking(pio, sm, pack_bus(reg, 0, true, true));   // addr hold
+    pio_sm_put_blocking(pio, sm, pack_bus(data, 1, true, true));  // data setup
+    pio_sm_put_blocking(pio, sm, pack_bus(data, 1, false, true)); // data latch
+    pio_sm_put_blocking(pio, sm, pack_bus(data, 1, true, true));  // data hold
+    pio_sm_put_blocking(pio, sm, BUS_IDLE);                       // idle
+}
+
+// Init AY8910 dedicated SM — same program, slower clock for timing
+static inline void ay8910_sm_init(PIO pio, uint sm, uint offset, uint base_pin) {
+    pio_sm_config c = pio_get_default_sm_config();
+
+    sm_config_set_out_pins(&c, base_pin, 14);
+    sm_config_set_out_shift(&c, true, true, 32);
+    sm_config_set_clkdiv(&c, 32);  // 125MHz/32 ≈ 3.9MHz, 512ns per word
+    sm_config_set_wrap(&c, offset, offset + 1);
+
+    for (int i = 0; i < 14; i++) {
+        pio_gpio_init(pio, base_pin + i);
+    }
+    pio_sm_set_consecutive_pindirs(pio, sm, base_pin, 14, true);
+    pio_sm_set_pins_with_mask(pio, sm,
+        ((1u << 8) | (1u << 9) | 0xFF) << base_pin,
+        ((1u << 14) - 1) << base_pin);
+
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
 }
 %}
