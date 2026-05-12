@@ -81,12 +81,12 @@ static inline void ym2413_pio_write_reg(PIO pio, uint sm,
     pio_bus_put(pio, sm, BUS_IDLE);
 }
 
-// AY8910 SSG: ~500ns per step
+// AY8910 PSG: 1µs per step (ref: MegaGRRL Driver_FmOutpsg)
 static inline void ay8910_pio_write_reg(PIO pio, uint sm,
                                          uint8_t reg, uint8_t data) {
     pio_bus_put(pio, sm, pack_bus(reg, 0, true, true));
     pio_bus_put(pio, sm, pack_bus(reg, 0, false, true));
-    busy_wait_us_32(1);  // ~500ns with overhead
+    busy_wait_us_32(1);
     pio_bus_put(pio, sm, pack_bus(reg, 0, true, true));
     pio_bus_put(pio, sm, pack_bus(data, 1, true, true));
     pio_bus_put(pio, sm, pack_bus(data, 1, false, true));

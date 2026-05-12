@@ -30,6 +30,5 @@ bool rpfm_send_reset(void);
 bool rpfm_send_vgm_data(const uint8_t *data, uint8_t len, uint16_t *buf_level);
 bool rpfm_vgm_start(uint16_t loop_offset, uint8_t *status);
 bool rpfm_vgm_stop(void);
-bool rpfm_query_status(uint8_t *status, uint16_t *buf_level);
 
 #endif

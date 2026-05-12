@@ -1625,7 +1625,6 @@ static bool DoFadeoutUpdate(void) {
 
 // Buffered mode: stream raw VGM bytes to firmware via CMD_VGM_DATA
 static DWORD WINAPI VGMStreamThread(LPVOID) {
-    DcLog("[VGM-Stream] Thread started\n");
     // Use local copy of VGM data — don't touch shared s_vgmFile/s_memPos
     std::vector<UINT8> localData;
     size_t localPos = 0;
@@ -1671,15 +1670,7 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
         uint32_t remain = prefillAmount - s_streamSent;
         size_t toSend = (remain > 60) ? 60 : remain;
         uint16_t newBufLevel = 0;
-        bool sent = false;
-        for (int retry = 0; retry < 3 && s_vgmStreamRunning && s_vgmPlaying; retry++) {
-            if (rpfm_send_vgm_data(&localData[localPos], (uint8_t)toSend, &newBufLevel)) {
-                sent = true;
-                break;
-            }
-            Sleep(10);
-        }
-        if (!sent) {
+        if (!rpfm_send_vgm_data(&localData[localPos], (uint8_t)toSend, &newBufLevel)) {
             DcLog("[VGM-Stream] Prefill HID send failed\n");
             s_vgmStreamRunning = false; return 0;
         }
@@ -1690,42 +1681,29 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
 
     DcLog("[VGM-Stream] Prefilled %u bytes, starting playback\n", s_streamSent);
 
-    // Now send VGM_START — must read response to confirm firmware received it
+    // Now send VGM_START — timer ISR begins consuming from pre-filled buffer
     uint16_t loopOff = 0;
     if (s_vgmLoopOffset > 0 && s_vgmLoopOffset >= s_vgmDataOffset)
         loopOff = (uint16_t)(s_vgmLoopOffset - s_vgmDataOffset);
 
-    {
-        uint8_t fwStatus = 0;
-        bool started = false;
-        for (int retry = 0; retry < 5 && s_vgmStreamRunning && s_vgmPlaying; retry++) {
-            if (rpfm_vgm_start(loopOff, &fwStatus)) {
-                if (fwStatus & 0x01) { // STATUS_PLAYING
-                    started = true;
-                    DcLog("[VGM-Stream] VGM start confirmed (status=0x%02X)\n", fwStatus);
-                    break;
-                }
-            }
-            DcLog("[VGM-Stream] VGM start retry %d\n", retry + 1);
-            Sleep(50);
-        }
-        if (!started) {
-            DcLog("[VGM-Stream] VGM start failed after retries\n");
-            s_vgmStreamRunning = false;
-            return 0;
-        }
+    if (!rpfm_vgm_start(loopOff, NULL)) {
+        DcLog("[VGM-Stream] VGM start failed\n");
+        s_vgmStreamRunning = false;
+        return 0;
     }
 
     // Phase 2: Continue streaming remaining data
     bool allDataSent = (s_streamSent >= localTotal);
-    int queryCounter = 0;
-    DcLog("[VGM-Stream] Entering stream loop, remaining=%u bytes\n", localTotal - s_streamSent);
 
     while (s_vgmStreamRunning && s_vgmPlaying) {
         if (s_vgmPaused) { Sleep(10); continue; }
 
         // Backpressure: wait if firmware buffer is >50% full
         if (s_bufLevel > s_bufTotal / 2) {
+            uint8_t dummy = 0;
+            uint16_t newLevel = 0;
+            if (rpfm_send_vgm_data(&dummy, 0, &newLevel))
+                s_bufLevel = newLevel;
             Sleep(1);
             continue;
         }
@@ -1737,19 +1715,12 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
                 DcLog("[VGM-Stream] All %u bytes sent, waiting for firmware to finish\n", s_streamSent);
             } else {
                 size_t toSend = (remain > 60) ? 60 : remain;
-                // Send with retry — HID may be busy, don't give up
-                bool sent = false;
-                for (int retry = 0; retry < 10 && s_vgmStreamRunning && s_vgmPlaying; retry++) {
-                    if (rpfm_send_vgm_data(&localData[localPos], (uint8_t)toSend, nullptr)) {
-                        sent = true;
-                        break;
-                    }
-                    Sleep(5);
-                }
-                if (!sent) {
-                    DcLog("[VGM-Stream] HID send failed after retries\n");
+                uint16_t newBufLevel = 0;
+                if (!rpfm_send_vgm_data(&localData[localPos], (uint8_t)toSend, &newBufLevel)) {
+                    DcLog("[VGM-Stream] HID send failed\n");
                     break;
                 }
+                s_bufLevel = newBufLevel;
                 localPos += toSend;
                 s_streamSent += (uint32_t)toSend;
 
@@ -2176,41 +2147,20 @@ void Update() {
     }
 
     // Buffered mode: detect stream thread finished
-    static int s_bufRetryCount = 0;
+    // Only check after stream has actually started sending data (s_streamTotal > 0)
     if (s_playbackMode == 1 && s_vgmPlaying && !s_vgmStreamRunning
-        && s_vgmStreamThread) {
+        && s_vgmStreamThread && s_streamTotal > 0) {
         WaitForSingleObject(s_vgmStreamThread, 2000);
         CloseHandle(s_vgmStreamThread);
         s_vgmStreamThread = nullptr;
-
-        DcLog("[VGM-Stream] Thread done: sent=%u total=%u samples=%u\n",
-            s_streamSent, s_streamTotal, s_vgmCurrentSamples);
-
-        // Track completed normally
-        if (s_streamSent >= s_streamTotal && s_streamTotal > 0 && s_vgmCurrentSamples > 0) {
-            s_vgmPlaying = false;
-            s_vgmPaused = false;
+        s_vgmPlaying = false;
+        s_vgmPaused = false;
+        // Only auto-next if thread exited normally (all data sent and consumed)
+        // Don't auto-next on early failures (prefill error, HID send failure, etc.)
+        if (s_streamSent >= s_streamTotal) {
             s_vgmTrackEnded = true;
-            s_bufRetryCount = 0;
             if (s_autoPlayNext && !s_playlist.empty()) PlayPlaylistNext();
         }
-        // Thread exited without completing — auto-retry
-        else if (s_vgmLoaded) {
-            s_bufRetryCount++;
-            DcLog("[VGM-Stream] Auto-retry #%d\n", s_bufRetryCount);
-            Sleep(100);
-            if (!rpfm_hid_is_open()) { rpfm_hid_open(); s_connected = rpfm_hid_is_open(); }
-            if (s_connected) rpfm_vgm_stop();
-            s_bufLevel = 0; s_streamSent = 0; s_streamTotal = 0; s_vgmCurrentSamples = 0;
-            s_vgmStreamRunning = true;
-            s_vgmStreamThread = CreateThread(NULL, 0, VGMStreamThread, NULL, 0, NULL);
-        } else {
-            s_vgmPlaying = false; s_vgmPaused = false; s_bufRetryCount = 0;
-        }
-    }
-    // Reset retry counter when playback is progressing well
-    if (s_playbackMode == 1 && s_vgmPlaying && s_vgmCurrentSamples > 44100) {
-        s_bufRetryCount = 0;
     }
 
     // Update scope voice channel offsets
