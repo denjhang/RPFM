@@ -2172,29 +2172,35 @@ void Update() {
         CloseHandle(s_vgmStreamThread);
         s_vgmStreamThread = nullptr;
 
-        // Track completed normally
-        if (s_streamSent >= s_streamTotal && s_streamTotal > 0) {
+        DcLog("[VGM-Stream] Thread done: sent=%u total=%u samples=%u\n",
+            s_streamSent, s_streamTotal, s_vgmCurrentSamples);
+
+        // Track completed normally (data fully sent AND some progress made)
+        if (s_streamSent >= s_streamTotal && s_streamTotal > 0 && s_vgmCurrentSamples > 0) {
             s_vgmPlaying = false;
             s_vgmPaused = false;
             s_vgmTrackEnded = true;
             s_bufRetryCount = 0;
             if (s_autoPlayNext && !s_playlist.empty()) PlayPlaylistNext();
         }
-        // Stream failed — auto-retry indefinitely until playback starts
+        // Stream failed or stalled — auto-retry indefinitely
         else {
             s_bufRetryCount++;
             if (s_vgmLoaded) {
-                if (s_bufRetryCount % 10 == 1)
-                    DcLog("[VGM-Stream] Auto-retry #%d\n", s_bufRetryCount);
+                DcLog("[VGM-Stream] Auto-retry #%d (sent=%u/%u samples=%u)\n",
+                    s_bufRetryCount, s_streamSent, s_streamTotal, s_vgmCurrentSamples);
                 Sleep(100);
                 // Re-open device if needed
                 if (!rpfm_hid_is_open()) {
                     rpfm_hid_open();
                     s_connected = rpfm_hid_is_open();
                 }
+                // Send stop to clear firmware state
+                if (s_connected) rpfm_vgm_stop();
                 s_bufLevel = 0;
                 s_streamSent = 0;
                 s_streamTotal = 0;
+                s_vgmCurrentSamples = 0;
                 s_vgmStreamRunning = true;
                 s_vgmStreamThread = CreateThread(NULL, 0, VGMStreamThread, NULL, 0, NULL);
             } else {
