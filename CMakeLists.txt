@@ -56,7 +56,7 @@ else()
         src/${PROTO_DIR}/usb_descriptors.c
     )
 
-    pico_generate_pio_header(${TARGET_NAME} ${CMAKE_CURRENT_SOURCE_DIR}/src/${PROTO_DIR}/ym2413.pio)
+    pico_generate_pio_header(${TARGET_NAME} ${CMAKE_CURRENT_SOURCE_DIR}/src/${PROTO_DIR}/spfm_bus.pio)
     pico_generate_pio_header(${TARGET_NAME} ${CMAKE_CURRENT_SOURCE_DIR}/src/${PROTO_DIR}/pio_cs.pio)
     pico_generate_pio_header(${TARGET_NAME} ${CMAKE_CURRENT_SOURCE_DIR}/src/${PROTO_DIR}/ws2812.pio)
 

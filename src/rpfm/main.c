@@ -13,7 +13,7 @@
 #include "pico/bootrom.h"
 #include "pico/multicore.h"
 #include "tusb.h"
-#include "ym2413.pio.h"
+#include "spfm_bus.pio.h"
 #include "pio_cs.pio.h"
 #include "ws2812.pio.h"
 #include "protocol.h"
@@ -47,29 +47,31 @@ static cmd_buf_t s_cmd;
 // ========== Protocol State ==========
 static volatile uint8_t s_last_seq = 0;
 static volatile uint8_t s_status = 0;
-static volatile uint8_t s_dbg_raw[16] = {0};
-static volatile bool s_dbg_ready = false;
 
-// Deferred write queue (main loop executes, not HID callback)
+// Deferred write queue (HID callback → main loop)
 #define DEFERRED_Q_SIZE 16
-static volatile uint8_t s_deferred_q[DEFERRED_Q_SIZE][3]; // [slot, addr, data]
+#define DQF_AY 0x01  // AY8910 fast timing
+static volatile uint8_t s_deferred_q[DEFERRED_Q_SIZE][3];
+static volatile uint8_t s_deferred_flags[DEFERRED_Q_SIZE];
 static volatile uint8_t s_deferred_head = 0;
 static volatile uint8_t s_deferred_tail = 0;
 
-static inline void deferred_push(uint8_t slot, uint8_t addr, uint8_t data) {
+static inline void deferred_push(uint8_t slot, uint8_t addr, uint8_t data, uint8_t flags) {
     uint8_t next = (s_deferred_head + 1) % DEFERRED_Q_SIZE;
-    if (next == s_deferred_tail) return; // full
+    if (next == s_deferred_tail) return;
     s_deferred_q[s_deferred_head][0] = slot;
     s_deferred_q[s_deferred_head][1] = addr;
     s_deferred_q[s_deferred_head][2] = data;
+    s_deferred_flags[s_deferred_head] = flags;
     s_deferred_head = next;
 }
 
-static inline bool deferred_pop(uint8_t *slot, uint8_t *addr, uint8_t *data) {
+static inline bool deferred_pop(uint8_t *slot, uint8_t *addr, uint8_t *data, uint8_t *flags) {
     if (s_deferred_head == s_deferred_tail) return false;
     *slot = s_deferred_q[s_deferred_tail][0];
     *addr = s_deferred_q[s_deferred_tail][1];
     *data = s_deferred_q[s_deferred_tail][2];
+    *flags = s_deferred_flags[s_deferred_tail];
     s_deferred_tail = (s_deferred_tail + 1) % DEFERRED_Q_SIZE;
     return true;
 }
@@ -77,9 +79,9 @@ static inline bool deferred_pop(uint8_t *slot, uint8_t *addr, uint8_t *data) {
 // ========== PIO Init ==========
 
 static void pio_bus_init(void) {
-    uint offset = pio_add_program(s_bus_pio, &ym2413_write_program);
+    uint offset = pio_add_program(s_bus_pio, &spfm_bus_write_program);
     s_bus_sm = pio_claim_unused_sm(s_bus_pio, true);
-    ym2413_write_program_init(s_bus_pio, s_bus_sm, offset, PIN_BUS_BASE);
+    spfm_bus_write_program_init(s_bus_pio, s_bus_sm, offset, PIN_BUS_BASE);
 }
 
 #define CS_IDLE 0x0F
@@ -135,25 +137,16 @@ static inline void ws_led_off_all(void) {
 
 // ========== Chip Writes ==========
 
-static inline void write_reg(uint8_t slot, uint8_t addr, uint8_t data) {
+static inline void write_reg_ym(uint8_t slot, uint8_t addr, uint8_t data) {
     cs_select(slot);
     if (s_ws_ready) ws_led_on(slot);
     ym2413_pio_write_reg(s_bus_pio, s_bus_sm, addr, data);
 }
 
-static inline void ay8910_write(uint8_t slot, uint8_t reg, uint8_t data) {
+static inline void write_reg_ay(uint8_t slot, uint8_t addr, uint8_t data) {
     cs_select(slot);
     if (s_ws_ready) ws_led_on(slot);
-    PIO pio = s_bus_pio; uint sm = s_bus_sm;
-    pio_bus_put(pio, sm, pack_bus(reg, 0, true, true));
-    pio_bus_put(pio, sm, pack_bus(reg, 0, false, true));
-    busy_wait_us_32(5);
-    pio_bus_put(pio, sm, pack_bus(reg, 0, true, true));
-    pio_bus_put(pio, sm, pack_bus(data, 1, true, true));
-    pio_bus_put(pio, sm, pack_bus(data, 1, false, true));
-    busy_wait_us_32(5);
-    pio_bus_put(pio, sm, pack_bus(data, 1, true, true));
-    pio_bus_put(pio, sm, BUS_IDLE);
+    ay8910_pio_write_reg(s_bus_pio, s_bus_sm, addr, data);
 }
 
 // ========== IC# Reset ==========
@@ -202,37 +195,33 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
     s_last_seq = seq;
     s_status &= ~STATUS_ERROR;
 
-    // Debug: save raw buffer
-    for (int i = 0; i < 16 && i < bufsize; i++)
-        s_dbg_raw[i] = buffer[i];
-    s_dbg_ready = true;
-
     const uint8_t *payload = buffer + 3;
 
     switch (cmd) {
     case CMD_WRITE_REG: {
-        // Queue writes for main loop execution
         for (uint8_t i = 0; i + 2 < len; i += 3) {
-            deferred_push(payload[i], payload[i+1], payload[i+2]);
+            deferred_push(payload[i], payload[i+1], payload[i+2], 0);
+        }
+        break;
+    }
+    case CMD_WRITE_AY: {
+        for (uint8_t i = 0; i + 2 < len; i += 3) {
+            deferred_push(payload[i], payload[i+1], payload[i+2], DQF_AY);
         }
         break;
     }
     case CMD_WRITE_TICK: {
-        // Write tick bytes into command buffer for playback engine
         for (uint8_t i = 0; i < len; i++) {
             cmd_buf_write(&s_cmd, payload[i]);
         }
         break;
     }
     case CMD_VGM_DATA: {
-        // VGM raw bytes → command buffer
         cmd_buf_write_buf(&s_cmd, payload, len);
         break;
     }
     case CMD_RESET: {
         if (len >= 1) {
-            // slot_mask: bit N = reset slot N
-            // For now, global IC# reset
             bus_ic_reset();
         }
         break;
@@ -264,20 +253,15 @@ uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id,
     if (reqlen < RPFM_FRAME_SIZE) return 0;
 
     memset(buffer, 0, RPFM_FRAME_SIZE);
-    buffer[0] = s_last_seq;                              // ACK
+    buffer[0] = s_last_seq;
     uint32_t used = cmd_buf_used(&s_cmd);
     if (used > (CMD_BUF_SIZE * 3 / 4))
         s_status |= STATUS_BUF_HIGH;
     else
         s_status &= ~STATUS_BUF_HIGH;
-    buffer[1] = s_status;                                // STATUS
-    buffer[2] = (uint8_t)(used & 0xFF);                  // BUF_LVL LO
-    buffer[3] = (uint8_t)((used >> 8) & 0xFF);           // BUF_LVL HI
-    // Debug: echo raw buffer[0..15]
-    if (s_dbg_ready) {
-        for (int i = 0; i < 16; i++)
-            buffer[4 + i] = s_dbg_raw[i];
-    }
+    buffer[1] = s_status;
+    buffer[2] = (uint8_t)(used & 0xFF);
+    buffer[3] = (uint8_t)((used >> 8) & 0xFF);
 
     return RPFM_FRAME_SIZE;
 }
@@ -319,10 +303,13 @@ int main() {
         tud_task();
         led_update();
 
-        // Execute one deferred register write per loop iteration
-        uint8_t slot, addr, data;
-        if (deferred_pop(&slot, &addr, &data)) {
-            write_reg(slot, addr, data);
+        // Execute deferred register writes
+        uint8_t slot, addr, data, flags;
+        while (deferred_pop(&slot, &addr, &data, &flags)) {
+            if (flags & DQF_AY)
+                write_reg_ay(slot, addr, data);
+            else
+                write_reg_ym(slot, addr, data);
         }
 
         // WS2812 auto-off after timeout

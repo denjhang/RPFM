@@ -27,6 +27,7 @@
 
 // RPFM protocol
 #define CMD_WRITE_REG  0x01
+#define CMD_WRITE_AY   0x08
 #define CMD_RESET      0x03
 #define CMD_BOOTSEL    0x20
 #define CMD_NOP        0xFF
@@ -146,26 +147,36 @@ static void cmd_reset(HANDLE h) {
 
 static void cmd_ay8910_test(HANDLE h) {
     uint8_t slot = 0;
-    // Reference: AY-3-8910_test.ino, 2MHz clock
-    // period=223 fine + 1 coarse = 479, freq ≈ 2M/(16*479) ≈ 261Hz (C4)
     int fine = 223;
     int coarse = 1;
+    static uint8_t seq = 0;
 
-    printf("AY8910 test tone: C4 (~261Hz), slot %d, period=%d\n", slot, fine + coarse * 256);
+    printf("AY8910 test tone: C4 (~261Hz), slot %d, period=%d (1us timing)\n", slot, fine + coarse * 256);
 
-    // Enable tone on channel A only (bit0=0 = tone A on)
-    cmd_write_reg(h, slot, 0x07, 0x3E);
+    uint8_t payload[3];
+    // Enable tone on channel A only
+    payload[0] = slot; payload[1] = 0x07; payload[2] = 0x3E;
+    seq = (seq + 1) & 0xFF;
+    send_frame(h, CMD_WRITE_AY, seq, payload, 3); Sleep(10);
     // Volume channel A = max
-    cmd_write_reg(h, slot, 0x08, 0x0F);
-    // Tone period channel A
-    cmd_write_reg(h, slot, 0x00, fine);
-    cmd_write_reg(h, slot, 0x01, coarse);
+    payload[1] = 0x08; payload[2] = 0x0F;
+    seq = (seq + 1) & 0xFF;
+    send_frame(h, CMD_WRITE_AY, seq, payload, 3); Sleep(10);
+    // Tone period
+    payload[1] = 0x00; payload[2] = fine;
+    seq = (seq + 1) & 0xFF;
+    send_frame(h, CMD_WRITE_AY, seq, payload, 3); Sleep(10);
+    payload[1] = 0x01; payload[2] = coarse;
+    seq = (seq + 1) & 0xFF;
+    send_frame(h, CMD_WRITE_AY, seq, payload, 3); Sleep(10);
 
-    printf("Playing... press Enter to stop\n");
-    getchar();
+    printf("Playing 5 seconds...\n");
+    Sleep(5000);
 
     // Mute
-    cmd_write_reg(h, slot, 0x07, 0x3F);
+    payload[1] = 0x07; payload[2] = 0x3F;
+    seq = (seq + 1) & 0xFF;
+    send_frame(h, CMD_WRITE_AY, seq, payload, 3);
     printf("Muted\n");
 }
 

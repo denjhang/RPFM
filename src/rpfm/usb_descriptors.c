@@ -55,10 +55,10 @@ uint8_t const * tud_descriptor_configuration_cb(uint8_t index) {
 
 // String Descriptors
 char const *string_desc_arr[] = {
-    (const char[]) { 0x09, 0x04 },
-    "Denjhang",
-    "RPFM",
-    "12345678"
+    (const char[]) { 0x09, 0x04 },  // 0: English (0x0409)
+    "Denjhang",                      // 1: Manufacturer
+    "RPFM SPFM Controller",          // 2: Product
+    "12345678"                       // 3: Serial
 };
 
 static uint16_t _desc_str[32 + 1];

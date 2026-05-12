@@ -1,4 +1,4 @@
-; ym2413.pio - YM2413 OPLL PIO bus driver (14-bit full parallel)
+; spfm_bus.pio - SPFM 14-bit parallel bus driver (YM2413/AY8910/SN76489)
 ;
 ; GPIO mapping (14 consecutive pins starting at base_pin=0):
 ;   GPIO0-7:  D0-D7  (data bus)
@@ -20,13 +20,13 @@
 ;
 ; Idle state: D=0xFF, WR#=1, RD#=1, A0-A3=0 = 0x03FF
 
-.program ym2413_write
+.program spfm_bus_write
 
     pull block                  ; get 32-bit word
     out pins, 14                ; bits[13:0] -> D0-D7, WR#, RD#, A0-A3
 
 % c-sdk {
-static inline void ym2413_write_program_init(PIO pio, uint sm, uint offset, uint base_pin) {
+static inline void spfm_bus_write_program_init(PIO pio, uint sm, uint offset, uint base_pin) {
     pio_sm_config c = pio_get_default_sm_config();
 
     sm_config_set_out_pins(&c, base_pin, 14);
@@ -61,9 +61,9 @@ static inline void pio_bus_put(PIO pio, uint sm, uint32_t val) {
     while (!pio_sm_is_tx_fifo_empty(pio, sm)) {}
 }
 
+// YM2413 OPLL: 20µs per step (ref: MegaGRRL Driver_FmOutopll)
 static inline void ym2413_pio_write_reg(PIO pio, uint sm,
                                          uint8_t reg, uint8_t data) {
-    // Address phase: A0=0, WR# pulse
     pio_bus_put(pio, sm, pack_bus(reg, 0, true, true));
     busy_wait_us_32(20);
     pio_bus_put(pio, sm, pack_bus(reg, 0, false, true));
@@ -71,7 +71,6 @@ static inline void ym2413_pio_write_reg(PIO pio, uint sm,
     pio_bus_put(pio, sm, pack_bus(reg, 0, true, true));
     busy_wait_us_32(20);
 
-    // Data phase: A0=1, WR# pulse
     pio_bus_put(pio, sm, pack_bus(data, 1, true, true));
     busy_wait_us_32(20);
     pio_bus_put(pio, sm, pack_bus(data, 1, false, true));
@@ -79,7 +78,20 @@ static inline void ym2413_pio_write_reg(PIO pio, uint sm,
     pio_bus_put(pio, sm, pack_bus(data, 1, true, true));
     busy_wait_us_32(20);
 
-    // Release: WR#=1, RD#=1, A0-A3=0, D=0xFF
+    pio_bus_put(pio, sm, BUS_IDLE);
+}
+
+// AY8910 PSG: 1µs per step (ref: MegaGRRL Driver_FmOutpsg)
+static inline void ay8910_pio_write_reg(PIO pio, uint sm,
+                                         uint8_t reg, uint8_t data) {
+    pio_bus_put(pio, sm, pack_bus(reg, 0, true, true));
+    pio_bus_put(pio, sm, pack_bus(reg, 0, false, true));
+    busy_wait_us_32(1);
+    pio_bus_put(pio, sm, pack_bus(reg, 0, true, true));
+    pio_bus_put(pio, sm, pack_bus(data, 1, true, true));
+    pio_bus_put(pio, sm, pack_bus(data, 1, false, true));
+    busy_wait_us_32(1);
+    pio_bus_put(pio, sm, pack_bus(data, 1, true, true));
     pio_bus_put(pio, sm, BUS_IDLE);
 }
 %}

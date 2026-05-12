@@ -20,7 +20,8 @@
 //   [4..63] DATA
 
 // CMD
-#define CMD_WRITE_REG   0x01  // [slot, addr, data] × N
+#define CMD_WRITE_REG   0x01  // [slot, addr, data] × N — YM2413 20µs timing
+#define CMD_WRITE_AY    0x08  // [slot, addr, data] × N — AY8910 1µs timing
 #define CMD_WRITE_TICK  0x02  // [tick_count, uint24 LE]
 #define CMD_RESET       0x03  // [slot_mask]
 #define CMD_VGM_DATA    0x04  // [vgm_bytes...]
