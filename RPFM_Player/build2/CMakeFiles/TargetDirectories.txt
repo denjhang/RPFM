@@ -1,0 +1,4 @@
+/d/working/vscode-projects/YM2163-Midi/RPFM/RPFM_Player/build2/CMakeFiles/imgui_lib.dir
+/d/working/vscode-projects/YM2163-Midi/RPFM/RPFM_Player/build2/CMakeFiles/rpfm_player.dir
+/d/working/vscode-projects/YM2163-Midi/RPFM/RPFM_Player/build2/CMakeFiles/edit_cache.dir
+/d/working/vscode-projects/YM2163-Midi/RPFM/RPFM_Player/build2/CMakeFiles/rebuild_cache.dir

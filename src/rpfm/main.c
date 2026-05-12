@@ -16,6 +16,7 @@
 #include "spfm_bus.pio.h"
 #include "pio_cs.pio.h"
 #include "ws2812.pio.h"
+#include "hardware/timer.h"
 #include "protocol.h"
 #include "command_buffer.h"
 
@@ -47,6 +48,9 @@ static cmd_buf_t s_cmd;
 // ========== Protocol State ==========
 static volatile uint8_t s_last_seq = 0;
 static volatile uint8_t s_status = 0;
+
+// VGM player (needs s_status, cs_select, write_reg_ay — declared below via forward decls in vgm_player.h)
+#include "vgm_player.h"
 
 // Deferred write queue (HID callback → main loop)
 #define DEFERRED_Q_SIZE 16
@@ -227,11 +231,14 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
         break;
     }
     case CMD_VGM_START: {
-        s_status |= STATUS_PLAYING;
+        // payload: [loop_offset_lo, loop_offset_hi] (relative to cmd_buf start)
+        uint32_t loop_off = 0;
+        if (len >= 2) loop_off = payload[0] | ((uint32_t)payload[1] << 8);
+        vgm_player_start(loop_off);
         break;
     }
     case CMD_VGM_STOP: {
-        s_status &= ~STATUS_PLAYING;
+        vgm_player_stop();
         cmd_buf_init(&s_cmd);
         break;
     }
@@ -289,6 +296,7 @@ int main() {
     pio_cs_init();
     ws2812_init();
     cmd_buf_init(&s_cmd);
+    vgm_player_init(&s_cmd, s_bus_pio, s_bus_sm);
 
     // Init TinyUSB device stack
     tud_init(BOARD_TUD_RHPORT);
