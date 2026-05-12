@@ -4,17 +4,23 @@
  *
  * Hardware wiring (RP2350A GPIO -> SPFM sound card module):
  *
- *   PIO-controlled (11 consecutive pins, GPIO0-10):
+ *   PIO0 SM0 (14 consecutive pins, GPIO0-13):
  *     GPIO0-7  -> D0-D7   (data bus)
  *     GPIO8    -> WR#     (write strobe, active low)
- *     GPIO9    -> A0      (address/data select)
- *     GPIO10   -> CS0#    (chip select, active low)
+ *     GPIO9    -> RD#     (read strobe, active low)
+ *     GPIO10   -> A0      (address/data select)
+ *     GPIO11   -> A1
+ *     GPIO12   -> A2
+ *     GPIO13   -> A3
+ *
+ *   PIO1 SM1 (4 consecutive pins, GPIO17-20):
+ *     GPIO17   -> CS0#    (chip select 0, active low)
+ *     GPIO18   -> CS1#    (chip select 1, active low)
+ *     GPIO19   -> CS2#    (chip select 2, active low)
+ *     GPIO20   -> CS3#    (chip select 3, active low)
  *
  *   CPU-controlled:
- *     GPIO11   -> IC#     (reset, active low)
- *     GPIO12   -> A1      (unused by YM2413, SPFM bus compat)
- *     GPIO13   -> A2      (unused by YM2413)
- *     GPIO14   -> A3      (unused by YM2413)
+ *     GPIO21   -> IC#     (reset, active low, power-on only)
  *     GPIO25   -> LED     (heartbeat)
  *     GND      -> GND     (must be connected!)
  */
@@ -27,18 +33,19 @@
 #include "hardware/pio.h"
 #include "pico/bootrom.h"
 #include "ym2413.pio.h"
+#include "pio_cs.pio.h"
 #include "tusb.h"
 
 // ========== Pin Definitions ==========
 
-// PIO-controlled (11 consecutive pins):
-#define PIN_BUS_BASE  0     // GPIO0-10 = D0-D7 + WR# + A0 + CS0#
+// PIO0 SM0 (14 consecutive pins): D0-D7 + WR# + RD# + A0-A3
+#define PIN_BUS_BASE  0     // GPIO0-13
+
+// PIO1 SM1 (4 consecutive pins): CS0-CS3
+#define PIN_CS_BASE   17    // GPIO17-20
 
 // CPU-controlled:
-#define PIN_IC   11
-#define PIN_A1   12
-#define PIN_A2   13
-#define PIN_A3   14
+#define PIN_IC   21
 #define PIN_LED  25
 
 // ========== YM2413 Constants ==========
@@ -48,23 +55,64 @@
 
 // ========== Global PIO State ==========
 
-static PIO s_pio = pio0;
-static uint s_sm = 0;
+static PIO s_bus_pio = pio0;
+static uint s_bus_sm = 0;
+static PIO s_cs_pio = pio1;
+static uint s_cs_sm = 0;
 
-// ========== PIO YM2413 Driver ==========
+// ========== PIO Bus Driver (14-bit) ==========
 
-static void pio_ym2413_init(void) {
-    printf("  PIO: adding program...\n");
-    uint offset = pio_add_program(s_pio, &ym2413_write_program);
-    printf("  PIO: program loaded at offset %u\n", offset);
-    s_sm = pio_claim_unused_sm(s_pio, true);
-    printf("  PIO: claimed SM %u\n", s_sm);
-    ym2413_write_program_init(s_pio, s_sm, offset, PIN_BUS_BASE);
-    printf("  PIO: SM initialized, enabled\n");
+static void pio_bus_init(void) {
+    printf("  Bus PIO: adding program...\n");
+    uint offset = pio_add_program(s_bus_pio, &ym2413_write_program);
+    printf("  Bus PIO: program loaded at offset %u\n", offset);
+    s_bus_sm = pio_claim_unused_sm(s_bus_pio, true);
+    printf("  Bus PIO: claimed SM %u\n", s_bus_sm);
+    ym2413_write_program_init(s_bus_pio, s_bus_sm, offset, PIN_BUS_BASE);
+    printf("  Bus PIO: SM initialized, enabled\n");
 }
 
+// ========== PIO CS Driver (4-bit) ==========
+
+// CS word format (4-bit): bit[0]=CS0#, bit[1]=CS1#, bit[2]=CS2#, bit[3]=CS3#
+// 1=idle (high), 0=selected (low)
+#define CS_IDLE 0x0F
+
+static inline uint32_t cs_pack(uint8_t slot) {
+    return CS_IDLE & ~(1u << slot);
+}
+
+static inline void pio_cs_put(PIO pio, uint sm, uint32_t val) {
+    pio_sm_put_blocking(pio, sm, val);
+    while (!pio_sm_is_tx_fifo_empty(pio, sm)) {}
+}
+
+static void pio_cs_init(void) {
+    printf("  CS PIO: adding program...\n");
+    uint offset = pio_add_program(s_cs_pio, &cs_out_program);
+    printf("  CS PIO: program loaded at offset %u\n", offset);
+    s_cs_sm = pio_claim_unused_sm(s_cs_pio, true);
+    printf("  CS PIO: claimed SM %u\n", s_cs_sm);
+    cs_out_program_init(s_cs_pio, s_cs_sm, offset, PIN_CS_BASE);
+    printf("  CS PIO: SM initialized, enabled\n");
+
+    // Push idle state (all CS high)
+    pio_cs_put(s_cs_pio, s_cs_sm, CS_IDLE);
+}
+
+static inline void cs_select(uint8_t slot) {
+    pio_cs_put(s_cs_pio, s_cs_sm, cs_pack(slot));
+}
+
+static inline void cs_deselect_all(void) {
+    pio_cs_put(s_cs_pio, s_cs_sm, CS_IDLE);
+}
+
+// ========== YM2413 Write (bus + CS combined) ==========
+
 static inline void ym2413_write_reg(uint8_t reg, uint8_t data) {
-    ym2413_pio_write_reg(s_pio, s_sm, reg, data);
+    // CS0# is slot 0
+    ym2413_pio_write_reg(s_bus_pio, s_bus_sm, reg, data);
 }
 
 // ========== YM2413 Control Functions ==========
@@ -271,22 +319,18 @@ static void play_instrument_demo(void) {
 // ========== GPIO Initialization ==========
 
 static void gpio_init_all(void) {
-    // CPU-controlled pins only (IC#, A1-A3, LED)
+    // IC# reset pin (CPU controlled, power-on reset only)
     gpio_init(PIN_IC);
     gpio_set_dir(PIN_IC, GPIO_OUT);
     gpio_put(PIN_IC, 1);
 
-    for (int i = PIN_A1; i <= PIN_A3; i++) {
-        gpio_init(i);
-        gpio_set_dir(i, GPIO_OUT);
-        gpio_put(i, 0);
-    }
-
+    // LED heartbeat
     gpio_init(PIN_LED);
     gpio_set_dir(PIN_LED, GPIO_OUT);
     gpio_put(PIN_LED, 0);
 
-    // GPIO0-10 (D0-D7, WR#, A0, CS0#) initialized by PIO
+    // GPIO0-13 (D0-D7, WR#, RD#, A0-A3) initialized by PIO0
+    // GPIO17-20 (CS0-CS3) initialized by PIO1
 }
 
 // ========== Main ==========
@@ -299,8 +343,14 @@ int main() {
     printf("Initializing GPIO...\n");
     gpio_init_all();
 
-    printf("Initializing PIO...\n");
-    pio_ym2413_init();
+    printf("Initializing PIO bus (14-bit)...\n");
+    pio_bus_init();
+
+    printf("Initializing PIO CS (4-bit)...\n");
+    pio_cs_init();
+
+    // Select CS0# (YM2413) before reset
+    cs_select(0);
 
     printf("Resetting YM2413...\n");
     ym2413_reset();

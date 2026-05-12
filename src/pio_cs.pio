@@ -1,0 +1,36 @@
+; pio_cs.pio - Chip select PIO driver (4-bit)
+;
+; GPIO mapping (4 consecutive pins starting at base_pin=17):
+;   GPIO17: CS0# (active low)
+;   GPIO18: CS1# (active low)
+;   GPIO19: CS2# (active low)
+;   GPIO20: CS3# (active low)
+;
+; 4-bit word: bit[0]=CS0#, bit[1]=CS1#, bit[2]=CS2#, bit[3]=CS3#
+; 1=idle (high), 0=selected (low)
+
+.program cs_out
+
+    pull block
+    out pins, 4
+
+% c-sdk {
+static inline void cs_out_program_init(PIO pio, uint sm, uint offset, uint base_pin) {
+    pio_sm_config c = pio_get_default_sm_config();
+
+    sm_config_set_out_pins(&c, base_pin, 4);
+    sm_config_set_out_shift(&c, true, true, 32);
+    sm_config_set_wrap(&c, offset, offset + 1);
+
+    for (int i = 0; i < 4; i++) {
+        pio_gpio_init(pio, base_pin + i);
+    }
+    pio_sm_set_consecutive_pindirs(pio, sm, base_pin, 4, true);
+    pio_sm_set_pins_with_mask(pio, sm,
+        (uint32_t)0x0F << base_pin,
+        0x0Fu << base_pin);
+
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}
