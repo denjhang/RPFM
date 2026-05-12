@@ -35,7 +35,7 @@ static uint s_cs_sm = 0;
 static PIO s_ws_pio = pio1;
 static uint s_ws_sm = 0;
 static bool s_ws_ready = false;
-static bool s_ws_led_pending = false;
+static absolute_time_t s_ws_off_time = {0};
 static uint32_t s_ws_leds[NUM_WS_LEDS] = {0};
 static const uint32_t cs_colors[NUM_WS_LEDS] = {
     0x006600, 0x000066, 0x666600, 0x660000,
@@ -47,6 +47,32 @@ static cmd_buf_t s_cmd;
 // ========== Protocol State ==========
 static volatile uint8_t s_last_seq = 0;
 static volatile uint8_t s_status = 0;
+static volatile uint8_t s_dbg_raw[16] = {0};
+static volatile bool s_dbg_ready = false;
+
+// Deferred write queue (main loop executes, not HID callback)
+#define DEFERRED_Q_SIZE 16
+static volatile uint8_t s_deferred_q[DEFERRED_Q_SIZE][3]; // [slot, addr, data]
+static volatile uint8_t s_deferred_head = 0;
+static volatile uint8_t s_deferred_tail = 0;
+
+static inline void deferred_push(uint8_t slot, uint8_t addr, uint8_t data) {
+    uint8_t next = (s_deferred_head + 1) % DEFERRED_Q_SIZE;
+    if (next == s_deferred_tail) return; // full
+    s_deferred_q[s_deferred_head][0] = slot;
+    s_deferred_q[s_deferred_head][1] = addr;
+    s_deferred_q[s_deferred_head][2] = data;
+    s_deferred_head = next;
+}
+
+static inline bool deferred_pop(uint8_t *slot, uint8_t *addr, uint8_t *data) {
+    if (s_deferred_head == s_deferred_tail) return false;
+    *slot = s_deferred_q[s_deferred_tail][0];
+    *addr = s_deferred_q[s_deferred_tail][1];
+    *data = s_deferred_q[s_deferred_tail][2];
+    s_deferred_tail = (s_deferred_tail + 1) % DEFERRED_Q_SIZE;
+    return true;
+}
 
 // ========== PIO Init ==========
 
@@ -99,7 +125,7 @@ static inline void ws_led_on(uint8_t slot) {
     if (s_ws_leds[slot] == cs_colors[slot]) return;
     s_ws_leds[slot] = cs_colors[slot];
     ws2812_update();
-    s_ws_led_pending = true;
+    s_ws_off_time = make_timeout_time_ms(50);
 }
 
 static inline void ws_led_off_all(void) {
@@ -159,7 +185,7 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
                            uint8_t const *buffer, uint16_t bufsize) {
     (void)instance; (void)report_id; (void)report_type;
 
-    if (bufsize < 3) return;
+    if (bufsize < 4) return;
 
     uint8_t cmd = buffer[0];
     uint8_t seq = buffer[1];
@@ -176,13 +202,18 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
     s_last_seq = seq;
     s_status &= ~STATUS_ERROR;
 
+    // Debug: save raw buffer
+    for (int i = 0; i < 16 && i < bufsize; i++)
+        s_dbg_raw[i] = buffer[i];
+    s_dbg_ready = true;
+
     const uint8_t *payload = buffer + 3;
 
     switch (cmd) {
     case CMD_WRITE_REG: {
-        // [slot, addr, data] × N
+        // Queue writes for main loop execution
         for (uint8_t i = 0; i + 2 < len; i += 3) {
-            write_reg(payload[i], payload[i+1], payload[i+2]);
+            deferred_push(payload[i], payload[i+1], payload[i+2]);
         }
         break;
     }
@@ -242,6 +273,11 @@ uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id,
     buffer[1] = s_status;                                // STATUS
     buffer[2] = (uint8_t)(used & 0xFF);                  // BUF_LVL LO
     buffer[3] = (uint8_t)((used >> 8) & 0xFF);           // BUF_LVL HI
+    // Debug: echo raw buffer[0..15]
+    if (s_dbg_ready) {
+        for (int i = 0; i < 16; i++)
+            buffer[4 + i] = s_dbg_raw[i];
+    }
 
     return RPFM_FRAME_SIZE;
 }
@@ -283,10 +319,16 @@ int main() {
         tud_task();
         led_update();
 
-        // WS2812 auto-off
-        if (s_ws_led_pending) {
-            s_ws_led_pending = false;
-            // Will be turned off in next cycle
+        // Execute one deferred register write per loop iteration
+        uint8_t slot, addr, data;
+        if (deferred_pop(&slot, &addr, &data)) {
+            write_reg(slot, addr, data);
+        }
+
+        // WS2812 auto-off after timeout
+        if (s_ws_off_time && time_reached(s_ws_off_time)) {
+            s_ws_off_time = (absolute_time_t){0};
+            ws_led_off_all();
         }
     }
 
