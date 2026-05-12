@@ -28,7 +28,6 @@ target_link_libraries(rpfm_ym2413_test PRIVATE
     hardware_gpio
     hardware_pio
     pico_multicore
-    hardware_sync
 )
 
 # SCCI doesn't set DTR
