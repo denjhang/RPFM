@@ -1727,7 +1727,9 @@ static void vgm_parse_byte(VgmParseState& s, uint8_t byte) {
                 uint8_t data = s.cmd_buf[1];
                 uint8_t chipID = (reg_raw & 0x80) >> 7;
                 uint8_t reg = reg_raw & 0x7F;
-                s_shadowQueue.push(reg, data, chipID, s.currentTick);
+                // Buffered mode: apply immediately for responsive visualization
+                if (chipID == 0) UpdateAY8910State(reg, data);
+                else UpdateAY8910State2(reg, data);
             } else if (s.cmd == 0x61) {
                 s.currentTick += s.cmd_buf[0] | ((uint32_t)s.cmd_buf[1] << 8);
             }
@@ -1780,7 +1782,6 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
     s_streamTotal = localTotal;
 
     VgmParseState parseState;
-    s_shadowQueue.clear();
     uint32_t bufTargetBytes = kBufSizes[s_bufTargetKB];
     if (bufTargetBytes > s_bufTotal) bufTargetBytes = s_bufTotal;
 
@@ -1831,9 +1832,6 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
     int streamFails = 0;
 
     while (s_vgmStreamRunning && s_vgmPlaying) {
-        // Sync shadow registers to firmware's actual playback position
-        s_shadowQueue.flushTo(fwTick);
-
         if (s_vgmPaused) { Sleep(10); continue; }
 
         // Backpressure: wait if firmware buffer is >50% of target
@@ -1842,8 +1840,6 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
             uint16_t newLevel = 0;
             if (rpfm_send_vgm_data(&dummy, 0, &newLevel, &fwTick))
                 s_bufLevel = newLevel;
-            else
-                Sleep(3);
             WaitForSingleObject(mmEvent, INFINITE);
             continue;
         }
@@ -1897,8 +1893,6 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
         }
     }
 
-    // Flush any remaining delayed updates
-    s_shadowQueue.flushAll();
     s_vgmStreamRunning = false;
     s_vgmPlaying = false;
     s_vgmTrackEnded = true;

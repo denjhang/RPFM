@@ -2,7 +2,8 @@
 
 ## 问题
 
-CPU 高负载时 VGM 播放卡住，必须重新点击文件才能恢复。
+1. CPU 高负载时 VGM 播放卡住，必须重新点击文件才能恢复
+2. 缓冲区越大，GUI 可视化（钢琴键盘、电平表）响应越慢
 
 ## 根因分析
 
@@ -19,6 +20,11 @@ CPU 高负载时 VGM 播放卡住，必须重新点击文件才能恢复。
 ### 3. 播放线程退出后 UI 状态不一致
 
 线程 break 退出后没有标记 `s_vgmPlaying=false`，UI 仍显示"播放中"但实际已停止。
+
+### 4. Tick 同步延迟导致可视化卡顿
+
+原缓冲模式用 tick-based shadow queue（`flushTo(fwTick)`），fwTick 是固件 Core 1
+实际播放位置。缓冲越大，fwTick 越滞后于上位机已解析的位置，可视化延迟一个缓冲区时间。
 
 ## 优化方案
 
@@ -59,6 +65,15 @@ backpressure 轮询用 `WaitForSingleObject(mmEvent, INFINITE)` 替代 `Sleep(1)
 | 等待完成 | 失败静默 | 失败时 Sleep(3) 重试 |
 | 线程退出 | 只设 streamRunning=false | 额外设 playing=false + trackEnded=true |
 
+### 缓冲模式即时可视化
+
+缓冲模式下不再使用 tick-based shadow queue delay，改为 `vgm_parse_byte` 解析到
+寄存器写入时直接调用 `UpdateAY8910State` / `UpdateAY8910State2`，可视化跟数据发送同步。
+
+原因：tick 同步（`flushTo(fwTick)`）在缓冲模式下会导致可视化滞后一个缓冲区时间，
+8KB 缓冲时滞后 ~180ms。固件 Core 1 的 tight loop 不能被打断添加回调，否则破坏
+sample-accurate 时序。因此上位机直接即时 apply 是唯一方案。
+
 ### 缓冲区范围调整
 
 旧范围：64B ~ 2KB（6 档）
@@ -67,7 +82,12 @@ backpressure 轮询用 `WaitForSingleObject(mmEvent, INFINITE)` 替代 `Sleep(1)
 
 下位机 command_buffer 为 32KB，8KB 上位机缓冲安全。
 
+## 为什么不改固件
+
+Core 1 是 44100Hz sample-accurate tight loop，任何中断/回调/FIFO 通知都会破坏时序精度。
+进度显示用固件返回的 tick（`s_vgm_tick`），可视化直接跟上位机发送同步。
+
 ## 改动文件
 
 - `RPFM_Player/src/rpfm_hid.cpp` — HID 写入 3 次重试
-- `RPFM_Player/src/ay8910_window.cpp` — 多媒体定时器 + 失败恢复 + 缓冲范围
+- `RPFM_Player/src/ay8910_window.cpp` — 多媒体定时器 + 失败恢复 + 即时可视化 + 缓冲范围
