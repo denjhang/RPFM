@@ -176,7 +176,7 @@ static int s_vgmMaxLoops = 2;
 // Playback Mode: 0=Live (real-time register writes), 1=Buffered (stream raw VGM to firmware)
 // s_playbackMode declared with s_ayDelayNs near line 190
 static uint16_t s_bufLevel = 0;
-static uint32_t s_bufTotal = 32768;
+static uint32_t s_bufTotal = 16384;
 static uint32_t s_streamSent = 0;
 static uint32_t s_streamTotal = 0;
 static int s_bufTargetKB = 16;  // firmware buffer target (KB), affects prefill/backpressure
@@ -845,8 +845,9 @@ static void LoadConfig(void) {
     s_playbackMode = GetPrivateProfileIntA("Settings", "PlaybackMode", 0, s_configPath);
     if (s_playbackMode < 0 || s_playbackMode > 1) s_playbackMode = 0;
     s_bufTargetKB = GetPrivateProfileIntA("Settings", "BufTargetKB", 16, s_configPath);
-    if (s_bufTargetKB < 2) s_bufTargetKB = 2;
+    if (s_bufTargetKB < 1) s_bufTargetKB = 1;
     if (s_bufTargetKB > 32) s_bufTargetKB = 32;
+    s_bufTotal = (uint32_t)s_bufTargetKB * 1024;
     {
         char val[32] = "";
         GetPrivateProfileStringA("Settings", "FadeoutDuration", "3.0", val, sizeof(val), s_configPath);
@@ -1725,6 +1726,7 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
 
     VgmParseState parseState;
     uint32_t bufTargetBytes = (uint32_t)s_bufTargetKB * 1024;
+    if (bufTargetBytes < 1024) bufTargetBytes = 1024;
     if (bufTargetBytes > s_bufTotal) bufTargetBytes = s_bufTotal;
 
     DcLog("[VGM-Stream] Total data: %u bytes\n", localTotal);
@@ -2791,8 +2793,9 @@ static void RenderSidebar(void) {
     }
 
     // Buffer target size (affects prefill and backpressure threshold)
-    if (ImGui::SliderInt("##aybufsz", &s_bufTargetKB, 2, 32, "%d KB")) {
-        if (s_bufTargetKB % 2 != 0) s_bufTargetKB = (s_bufTargetKB / 2) * 2;
+    ImGui::TextDisabled("Buffer Size");
+    if (ImGui::SliderInt("##aybufsz", &s_bufTargetKB, 1, 32, "%d KB")) {
+        s_bufTotal = (uint32_t)s_bufTargetKB * 1024;
         SaveConfig();
     }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip(
