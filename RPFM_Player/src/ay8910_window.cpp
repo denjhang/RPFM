@@ -179,6 +179,7 @@ static uint16_t s_bufLevel = 0;
 static uint32_t s_bufTotal = 32768;
 static uint32_t s_streamSent = 0;
 static uint32_t s_streamTotal = 0;
+static int s_bufTargetKB = 16;  // firmware buffer target (KB), affects prefill/backpressure
 static HANDLE s_vgmStreamThread = nullptr;
 static volatile bool s_vgmStreamRunning = false;
 
@@ -843,6 +844,9 @@ static void LoadConfig(void) {
     if (s_ayDelayNs > 2000) s_ayDelayNs = 2000;
     s_playbackMode = GetPrivateProfileIntA("Settings", "PlaybackMode", 0, s_configPath);
     if (s_playbackMode < 0 || s_playbackMode > 1) s_playbackMode = 0;
+    s_bufTargetKB = GetPrivateProfileIntA("Settings", "BufTargetKB", 16, s_configPath);
+    if (s_bufTargetKB < 2) s_bufTargetKB = 2;
+    if (s_bufTargetKB > 32) s_bufTargetKB = 32;
     {
         char val[32] = "";
         GetPrivateProfileStringA("Settings", "FadeoutDuration", "3.0", val, sizeof(val), s_configPath);
@@ -895,6 +899,7 @@ static void SaveConfig(void) {
     WritePrivateProfileStringA("Settings", "FlushThreshold", std::to_string(s_flushThreshold).c_str(), s_configPath);
     WritePrivateProfileStringA("Settings", "AyPioDelay", std::to_string(s_ayDelayNs).c_str(), s_configPath);
     WritePrivateProfileStringA("Settings", "PlaybackMode", std::to_string(s_playbackMode).c_str(), s_configPath);
+    WritePrivateProfileStringA("Settings", "BufTargetKB", std::to_string(s_bufTargetKB).c_str(), s_configPath);
     {
         char val[32];
         snprintf(val, sizeof(val), "%.1f", s_fadeoutDuration);
@@ -1634,6 +1639,53 @@ static bool DoFadeoutUpdate(void) {
     return false;
 }
 
+// VGM parse state machine for shadow register sync in buffered mode
+struct VgmParseState {
+    bool in_cmd = false;
+    uint8_t cmd = 0;
+    uint8_t bytes_remaining = 0;
+    uint8_t cmd_buf[4];
+    int buf_pos = 0;
+};
+
+static void vgm_parse_byte(VgmParseState& s, uint8_t byte) {
+    if (!s.in_cmd) {
+        s.cmd = byte;
+        s.buf_pos = 0;
+        if (byte == 0xA0) {
+            s.bytes_remaining = 2;
+            s.in_cmd = true;
+        } else if (byte >= 0x70 && byte <= 0x7F) {
+            // short wait, no data
+        } else if (byte == 0x61) {
+            s.bytes_remaining = 2;
+            s.in_cmd = true;
+        } else if (byte == 0x62 || byte == 0x63 || byte == 0x66) {
+            // no data
+        } else {
+            UINT8 len = VGM_CMD_LEN[byte];
+            if (len > 1) {
+                s.bytes_remaining = len - 1;
+                s.in_cmd = true;
+            }
+        }
+    } else {
+        s.cmd_buf[s.buf_pos++] = byte;
+        s.bytes_remaining--;
+        if (s.bytes_remaining == 0) {
+            if (s.cmd == 0xA0) {
+                uint8_t reg_raw = s.cmd_buf[0];
+                uint8_t data = s.cmd_buf[1];
+                uint8_t chipID = (reg_raw & 0x80) >> 7;
+                uint8_t reg = reg_raw & 0x7F;
+                if (chipID == 0) UpdateAY8910State(reg, data);
+                else UpdateAY8910State2(reg, data);
+            }
+            s.in_cmd = false;
+        }
+    }
+}
+
 // Buffered mode: stream raw VGM bytes to firmware via CMD_VGM_DATA
 static DWORD WINAPI VGMStreamThread(LPVOID) {
     // Use local copy of VGM data — don't touch shared s_vgmFile/s_memPos
@@ -1671,12 +1723,14 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
     s_streamSent = 0;
     s_streamTotal = localTotal;
 
+    VgmParseState parseState;
+    uint32_t bufTargetBytes = (uint32_t)s_bufTargetKB * 1024;
+    if (bufTargetBytes > s_bufTotal) bufTargetBytes = s_bufTotal;
+
     DcLog("[VGM-Stream] Total data: %u bytes\n", localTotal);
 
-    // Phase 1: Pre-fill firmware buffer (up to 8KB) before starting timer
-    // This prevents the timer ISR from immediately hitting an empty buffer
-    const uint32_t PREFILL_SIZE = 8192;
-    uint32_t prefillAmount = (localTotal > PREFILL_SIZE) ? PREFILL_SIZE : localTotal;
+    // Phase 1: Pre-fill firmware buffer before starting timer
+    uint32_t prefillAmount = (localTotal > bufTargetBytes / 4) ? bufTargetBytes / 4 : localTotal;
     while (s_streamSent < prefillAmount && s_vgmStreamRunning && s_vgmPlaying) {
         uint32_t remain = prefillAmount - s_streamSent;
         size_t toSend = (remain > 60) ? 60 : remain;
@@ -1685,6 +1739,9 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
             DcLog("[VGM-Stream] Prefill HID send failed\n");
             s_vgmStreamRunning = false; return 0;
         }
+        // Parse VGM commands for shadow register sync
+        for (size_t i = 0; i < toSend; i++)
+            vgm_parse_byte(parseState, localData[localPos + i]);
         s_bufLevel = newBufLevel;
         localPos += toSend;
         s_streamSent += (uint32_t)toSend;
@@ -1709,8 +1766,8 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
     while (s_vgmStreamRunning && s_vgmPlaying) {
         if (s_vgmPaused) { Sleep(10); continue; }
 
-        // Backpressure: wait if firmware buffer is >50% full
-        if (s_bufLevel > s_bufTotal / 2) {
+        // Backpressure: wait if firmware buffer is >50% of target
+        if (s_bufLevel > bufTargetBytes / 2) {
             uint8_t dummy = 0;
             uint16_t newLevel = 0;
             if (rpfm_send_vgm_data(&dummy, 0, &newLevel))
@@ -1731,6 +1788,9 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
                     DcLog("[VGM-Stream] HID send failed\n");
                     break;
                 }
+                // Parse VGM commands for shadow register sync
+                for (size_t i = 0; i < toSend; i++)
+                    vgm_parse_byte(parseState, localData[localPos + i]);
                 s_bufLevel = newBufLevel;
                 localPos += toSend;
                 s_streamSent += (uint32_t)toSend;
@@ -2729,6 +2789,16 @@ static void RenderSidebar(void) {
         }
         SaveConfig();
     }
+
+    // Buffer target size (affects prefill and backpressure threshold)
+    if (ImGui::SliderInt("##aybufsz", &s_bufTargetKB, 2, 32, "%d KB")) {
+        if (s_bufTargetKB % 2 != 0) s_bufTargetKB = (s_bufTargetKB / 2) * 2;
+        SaveConfig();
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+        "Firmware buffer target size.\n"
+        "Smaller = lower latency, larger = more stable.\n"
+        "Affects prefill amount and backpressure threshold.");
 
     ImGui::Spacing(); ImGui::Separator();
 
