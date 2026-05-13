@@ -139,12 +139,13 @@ Windows desktop player built with Dear ImGui, supporting AY8910 live/buffered du
 ### Features
 
 - **Piano keyboard** — real-time note display, multi-channel colored keys, portamento/vibrato indicators
-- **Level meters** — per-channel level bars with dB scale, click-to-mute/solo
+- **Level meters** — unified volume bars for all modes (tone/noise/env/DAC), dB scale, click-to-mute/solo
 - **Register table** — live shadow register view: tone, noise, mixer, volume, envelope
 - **Oscilloscope** — configurable waveform display
 - **Playback controls** — VGM file loading, play/pause/stop, progress bar, loop support
-- **Sidebar config** — PIO delay adjustment, buffer size (64 B–2 KB), playback mode, clock correction
+- **Sidebar config** — PIO delay adjustment, buffer size (512 B–8 KB), playback mode, clock correction
 - **Tick display** — firmware playback position / total ticks with time readout
+- **Playback stability** — HID write retry, multimedia timer polling, failure recovery
 - **Config persistence** — all sidebar settings saved to `ay8910_config.ini`
 
 ### Build
@@ -233,12 +234,17 @@ RPFM/
 
 RPFM is the third generation: IAP-RESPFM (2022, STM32F103) → DIY SPFM (2024, STM32) → RP2350A (2026).
 
+See [CHANGELOG.md](CHANGELOG.md) for full release notes.
+
+- **2026-05-13** — Playback stability: HID retry, multimedia timer, buffer 512 B–8 KB, instant visualization
+- **2026-05-13** — AY8910 level meter rework: unified volume bars, DAC/ENV mode display
+- **2026-05-13** — GPIO pinout expansion plan (RP2350A/B, touchscreen, SD, USB Host MIDI)
 - **2026-05-12** — Project start, PIO parallel bus driving YM2413/AY8910
 - **2026-05-12** — USB HID 64-byte frame protocol replacing CDC, fixing overflow crashes
 - **2026-05-12** — HID auto-flash via BOOTSEL command
 - **2026-05-13** — Core 1 VGM playback engine (MegaGRRL-style cycle counter)
 - **2026-05-13** — Host DMPlayer AY8910 window port (SCCI → RPFM HID)
-- **2026-05-13** — Tick-synced shadow registers, buffer slider 64 B–2 KB
+- **2026-05-13** — Tick-synced shadow registers, buffer slider
 
 ## License
 
