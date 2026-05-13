@@ -180,8 +180,8 @@ static uint16_t s_bufLevel = 0;
 static uint32_t s_bufTotal = 2048;
 static uint32_t s_streamSent = 0;
 static uint32_t s_streamTotal = 0;
-static int s_bufTargetKB = 5;  // 0=64B, 1=128B, 2=256B, 3=512B, 4=1KB, 5=2KB
-static const uint32_t kBufSizes[] = {64, 128, 256, 512, 1024, 2048};
+static int s_bufTargetKB = 0;  // 0=512B (default), 1=1KB, ..., 5=8KB
+static const uint32_t kBufSizes[] = {512, 1024, 2048, 3072, 4096, 8192};
 static const int kBufSizeCount = 6;
 static HANDLE s_vgmStreamThread = nullptr;
 static volatile bool s_vgmStreamRunning = false;
@@ -1738,6 +1738,12 @@ static void vgm_parse_byte(VgmParseState& s, uint8_t byte) {
 
 // Buffered mode: stream raw VGM bytes to firmware via CMD_VGM_DATA
 static DWORD WINAPI VGMStreamThread(LPVOID) {
+    // 1ms multimedia timer for precise polling (replaces Sleep(1) which drifts under load)
+    HANDLE mmEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
+    MMRESULT mmTimer = timeSetEvent(1, 1, (LPTIMECALLBACK)mmEvent, 0,
+                                     TIME_PERIODIC | TIME_CALLBACK_EVENT_SET);
+    if (!mmTimer) { DcLog("[VGM-Stream] Failed to create mm timer\n"); CloseHandle(mmEvent); s_vgmStreamRunning = false; s_vgmPlaying = false; s_vgmTrackEnded = true; return 0; }
+
     // Use local copy of VGM data — don't touch shared s_vgmFile/s_memPos
     std::vector<UINT8> localData;
     size_t localPos = 0;
@@ -1782,14 +1788,22 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
 
     // Phase 1: Pre-fill firmware buffer before starting timer
     uint32_t prefillAmount = (localTotal > bufTargetBytes / 4) ? bufTargetBytes / 4 : localTotal;
+    int prefillFails = 0;
     while (s_streamSent < prefillAmount && s_vgmStreamRunning && s_vgmPlaying) {
         uint32_t remain = prefillAmount - s_streamSent;
         size_t toSend = (remain > 60) ? 60 : remain;
         uint16_t newBufLevel = 0;
         if (!rpfm_send_vgm_data(&localData[localPos], (uint8_t)toSend, &newBufLevel, nullptr)) {
-            DcLog("[VGM-Stream] Prefill HID send failed\n");
-            s_vgmStreamRunning = false; return 0;
+            prefillFails++;
+            if (prefillFails >= 10) {
+                DcLog("[VGM-Stream] Prefill failed 10 times, aborting\n");
+                s_vgmStreamRunning = false; s_vgmPlaying = false; s_vgmTrackEnded = true; return 0;
+            }
+            DcLog("[VGM-Stream] Prefill HID fail #%d, retrying...\n", prefillFails);
+            Sleep(5);
+            continue;
         }
+        prefillFails = 0;
         // Parse VGM commands — tick-based, no delay yet (firmware not playing)
         for (size_t i = 0; i < toSend; i++)
             vgm_parse_byte(parseState, localData[localPos + i]);
@@ -1814,6 +1828,7 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
     // Phase 2: Continue streaming remaining data
     bool allDataSent = (s_streamSent >= localTotal);
     uint32_t fwTick = 0;
+    int streamFails = 0;
 
     while (s_vgmStreamRunning && s_vgmPlaying) {
         // Sync shadow registers to firmware's actual playback position
@@ -1827,7 +1842,9 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
             uint16_t newLevel = 0;
             if (rpfm_send_vgm_data(&dummy, 0, &newLevel, &fwTick))
                 s_bufLevel = newLevel;
-            Sleep(1);
+            else
+                Sleep(3);
+            WaitForSingleObject(mmEvent, INFINITE);
             continue;
         }
 
@@ -1840,9 +1857,17 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
                 size_t toSend = (remain > 60) ? 60 : remain;
                 uint16_t newBufLevel = 0;
                 if (!rpfm_send_vgm_data(&localData[localPos], (uint8_t)toSend, &newBufLevel, &fwTick)) {
-                    DcLog("[VGM-Stream] HID send failed\n");
-                    break;
+                    streamFails++;
+                    if (streamFails >= 20) {
+                        DcLog("[VGM-Stream] HID send failed 20 times, stopping\n");
+                        s_vgmPlaying = false; s_vgmTrackEnded = true;
+                        break;
+                    }
+                    DcLog("[VGM-Stream] HID send fail #%d, retrying...\n", streamFails);
+                    Sleep(3);
+                    continue;
                 }
+                streamFails = 0;
                 // Parse VGM commands into tick-based shadow queue
                 for (size_t i = 0; i < toSend; i++)
                     vgm_parse_byte(parseState, localData[localPos + i]);
@@ -1862,6 +1887,8 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
             uint16_t newLevel = 0;
             if (rpfm_send_vgm_data(&dummy, 0, &newLevel, &fwTick))
                 s_bufLevel = newLevel;
+            else
+                Sleep(3);
             if (s_bufLevel == 0) {
                 DcLog("[VGM-Stream] Firmware buffer drained, playback complete\n");
                 break;
@@ -1873,6 +1900,10 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
     // Flush any remaining delayed updates
     s_shadowQueue.flushAll();
     s_vgmStreamRunning = false;
+    s_vgmPlaying = false;
+    s_vgmTrackEnded = true;
+    timeKillEvent(mmTimer);
+    CloseHandle(mmEvent);
     return 0;
 }
 
@@ -2893,7 +2924,7 @@ static void RenderSidebar(void) {
 
     // Buffer target size (affects prefill and backpressure threshold)
     ImGui::TextDisabled("Buffer Size");
-    const char* bufLabels[] = {"64 B","128 B","256 B","512 B","1 KB","2 KB"};
+    const char* bufLabels[] = {"512 B","1 KB","2 KB","3 KB","4 KB","8 KB"};
     if (ImGui::SliderInt("##aybufsz", &s_bufTargetKB, 0, kBufSizeCount - 1, bufLabels[s_bufTargetKB])) {
         s_bufTotal = kBufSizes[s_bufTargetKB];
         SaveConfig();

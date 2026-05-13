@@ -81,8 +81,14 @@ bool rpfm_hid_send_frame(uint8_t cmd, uint8_t seq,
     buf[0] = 0; // report ID
     rpfm_make_frame(buf + 1, cmd, seq, payload, plen);
 
-    if (!HidD_SetOutputReport(s_handle, buf, 65))
-        return false;
+    // HID write with retry (CPU load / USB bus busy)
+    for (int retry = 0; retry < 3; retry++) {
+        if (HidD_SetOutputReport(s_handle, buf, 65))
+            break;
+        if (retry == 2)
+            return false;
+        Sleep(1);
+    }
 
     // Read response only when explicitly requested (not during VGM playback)
     if (resp) {
