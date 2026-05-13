@@ -176,10 +176,10 @@ static int s_vgmMaxLoops = 2;
 // Playback Mode: 0=Live (real-time register writes), 1=Buffered (stream raw VGM to firmware)
 // s_playbackMode declared with s_ayDelayNs near line 190
 static uint16_t s_bufLevel = 0;
-static uint32_t s_bufTotal = 16384;
+static uint32_t s_bufTotal = 2048;
 static uint32_t s_streamSent = 0;
 static uint32_t s_streamTotal = 0;
-static int s_bufTargetKB = 16;  // firmware buffer target (KB), affects prefill/backpressure
+static int s_bufTargetKB = 2;  // 0=512B, 1=1KB, 2=2KB, 3=3KB, 4=4KB
 static HANDLE s_vgmStreamThread = nullptr;
 static volatile bool s_vgmStreamRunning = false;
 
@@ -844,10 +844,10 @@ static void LoadConfig(void) {
     if (s_ayDelayNs > 2000) s_ayDelayNs = 2000;
     s_playbackMode = GetPrivateProfileIntA("Settings", "PlaybackMode", 0, s_configPath);
     if (s_playbackMode < 0 || s_playbackMode > 1) s_playbackMode = 0;
-    s_bufTargetKB = GetPrivateProfileIntA("Settings", "BufTargetKB", 16, s_configPath);
-    if (s_bufTargetKB < 1) s_bufTargetKB = 1;
-    if (s_bufTargetKB > 32) s_bufTargetKB = 32;
-    s_bufTotal = (uint32_t)s_bufTargetKB * 1024;
+    s_bufTargetKB = GetPrivateProfileIntA("Settings", "BufTargetKB", 2, s_configPath);
+    if (s_bufTargetKB < 0) s_bufTargetKB = 0;
+    if (s_bufTargetKB > 4) s_bufTargetKB = 4;
+    s_bufTotal = (uint32_t)(s_bufTargetKB > 0 ? s_bufTargetKB * 1024 : 512);
     {
         char val[32] = "";
         GetPrivateProfileStringA("Settings", "FadeoutDuration", "3.0", val, sizeof(val), s_configPath);
@@ -1725,8 +1725,7 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
     s_streamTotal = localTotal;
 
     VgmParseState parseState;
-    uint32_t bufTargetBytes = (uint32_t)s_bufTargetKB * 1024;
-    if (bufTargetBytes < 1024) bufTargetBytes = 1024;
+    uint32_t bufTargetBytes = (s_bufTargetKB == 0) ? 512 : (uint32_t)s_bufTargetKB * 1024;
     if (bufTargetBytes > s_bufTotal) bufTargetBytes = s_bufTotal;
 
     DcLog("[VGM-Stream] Total data: %u bytes\n", localTotal);
@@ -2794,8 +2793,11 @@ static void RenderSidebar(void) {
 
     // Buffer target size (affects prefill and backpressure threshold)
     ImGui::TextDisabled("Buffer Size");
-    if (ImGui::SliderInt("##aybufsz", &s_bufTargetKB, 1, 32, "%d KB")) {
-        s_bufTotal = (uint32_t)s_bufTargetKB * 1024;
+    // Buffer target size
+    const char* bufLabels[] = {"512 B","1 KB","2 KB","3 KB","4 KB"};
+    ImGui::TextDisabled("Buffer Size");
+    if (ImGui::SliderInt("##aybufsz", &s_bufTargetKB, 0, 4, bufLabels[s_bufTargetKB])) {
+        s_bufTotal = (s_bufTargetKB == 0) ? 512 : (uint32_t)s_bufTargetKB * 1024;
         SaveConfig();
     }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip(
