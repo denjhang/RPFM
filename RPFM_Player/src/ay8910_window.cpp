@@ -115,6 +115,7 @@ static bool s_vgmPaused = false;
 static bool s_vgmTrackEnded = false;
 static UINT32 s_vgmTotalSamples = 0;
 static UINT32 s_vgmCurrentSamples = 0;
+static uint32_t s_fwTick = 0;  // firmware's current playback tick (from HID response)
 static UINT32 s_vgmDataOffset = 0;
 static UINT32 s_vgmLoopOffset = 0;
 static UINT32 s_vgmLoopSamples = 0;
@@ -179,7 +180,9 @@ static uint16_t s_bufLevel = 0;
 static uint32_t s_bufTotal = 2048;
 static uint32_t s_streamSent = 0;
 static uint32_t s_streamTotal = 0;
-static int s_bufTargetKB = 2;  // 0=512B, 1=1KB, 2=2KB, 3=3KB, 4=4KB
+static int s_bufTargetKB = 5;  // 0=64B, 1=128B, 2=256B, 3=512B, 4=1KB, 5=2KB
+static const uint32_t kBufSizes[] = {64, 128, 256, 512, 1024, 2048};
+static const int kBufSizeCount = 6;
 static HANDLE s_vgmStreamThread = nullptr;
 static volatile bool s_vgmStreamRunning = false;
 
@@ -844,10 +847,10 @@ static void LoadConfig(void) {
     if (s_ayDelayNs > 2000) s_ayDelayNs = 2000;
     s_playbackMode = GetPrivateProfileIntA("Settings", "PlaybackMode", 0, s_configPath);
     if (s_playbackMode < 0 || s_playbackMode > 1) s_playbackMode = 0;
-    s_bufTargetKB = GetPrivateProfileIntA("Settings", "BufTargetKB", 2, s_configPath);
+    s_bufTargetKB = GetPrivateProfileIntA("Settings", "BufTargetKB", 5, s_configPath);
     if (s_bufTargetKB < 0) s_bufTargetKB = 0;
-    if (s_bufTargetKB > 4) s_bufTargetKB = 4;
-    s_bufTotal = (uint32_t)(s_bufTargetKB > 0 ? s_bufTargetKB * 1024 : 512);
+    if (s_bufTargetKB >= kBufSizeCount) s_bufTargetKB = kBufSizeCount - 1;
+    s_bufTotal = kBufSizes[s_bufTargetKB];
     {
         char val[32] = "";
         GetPrivateProfileStringA("Settings", "FadeoutDuration", "3.0", val, sizeof(val), s_configPath);
@@ -1640,6 +1643,54 @@ static bool DoFadeoutUpdate(void) {
     return false;
 }
 
+// Tick-based shadow register queue: syncs UI visualization with firmware playback
+// Each update is tagged with its VGM sample tick; flushed when fwTick catches up.
+struct ShadowRegUpdate {
+    uint8_t reg;
+    uint8_t data;
+    uint8_t chipID;   // 0 or 1
+    uint32_t tick;     // VGM sample position (44100 Hz)
+};
+
+struct ShadowRegDelayQueue {
+    static constexpr int CAP = 512;
+    ShadowRegUpdate buf[CAP];
+    int head = 0, tail = 0, count = 0;
+
+    void push(uint8_t reg, uint8_t data, uint8_t chipID, uint32_t tick) {
+        if (count >= CAP) flushTo(tick);  // overflow: flush oldest
+        auto& t = buf[tail];
+        t.reg = reg; t.data = data; t.chipID = chipID; t.tick = tick;
+        tail = (tail + 1) % CAP;
+        count++;
+    }
+
+    // Apply all updates up to (and including) the given firmware tick
+    void flushTo(uint32_t fwTick) {
+        while (count > 0 && buf[head].tick <= fwTick) {
+            auto& t = buf[head];
+            if (t.chipID == 0) UpdateAY8910State(t.reg, t.data);
+            else UpdateAY8910State2(t.reg, t.data);
+            head = (head + 1) % CAP;
+            count--;
+        }
+    }
+
+    void flushAll() {
+        while (count > 0) {
+            auto& t = buf[head];
+            if (t.chipID == 0) UpdateAY8910State(t.reg, t.data);
+            else UpdateAY8910State2(t.reg, t.data);
+            head = (head + 1) % CAP;
+            count--;
+        }
+    }
+
+    void clear() { head = tail = count = 0; }
+};
+
+static ShadowRegDelayQueue s_shadowQueue;
+
 // VGM parse state machine for shadow register sync in buffered mode
 struct VgmParseState {
     bool in_cmd = false;
@@ -1647,6 +1698,7 @@ struct VgmParseState {
     uint8_t bytes_remaining = 0;
     uint8_t cmd_buf[4];
     int buf_pos = 0;
+    uint32_t currentTick = 0;  // running VGM sample position
 };
 
 static void vgm_parse_byte(VgmParseState& s, uint8_t byte) {
@@ -1657,12 +1709,16 @@ static void vgm_parse_byte(VgmParseState& s, uint8_t byte) {
             s.bytes_remaining = 2;
             s.in_cmd = true;
         } else if (byte >= 0x70 && byte <= 0x7F) {
-            // short wait, no data
+            s.currentTick += (byte & 0x0F) + 1;
         } else if (byte == 0x61) {
             s.bytes_remaining = 2;
             s.in_cmd = true;
-        } else if (byte == 0x62 || byte == 0x63 || byte == 0x66) {
-            // no data
+        } else if (byte == 0x62) {
+            s.currentTick += 735;  // NTSC frame
+        } else if (byte == 0x63) {
+            s.currentTick += 882;  // PAL frame
+        } else if (byte == 0x66) {
+            // end/loop
         } else {
             UINT8 len = VGM_CMD_LEN[byte];
             if (len > 1) {
@@ -1679,8 +1735,9 @@ static void vgm_parse_byte(VgmParseState& s, uint8_t byte) {
                 uint8_t data = s.cmd_buf[1];
                 uint8_t chipID = (reg_raw & 0x80) >> 7;
                 uint8_t reg = reg_raw & 0x7F;
-                if (chipID == 0) UpdateAY8910State(reg, data);
-                else UpdateAY8910State2(reg, data);
+                s_shadowQueue.push(reg, data, chipID, s.currentTick);
+            } else if (s.cmd == 0x61) {
+                s.currentTick += s.cmd_buf[0] | ((uint32_t)s.cmd_buf[1] << 8);
             }
             s.in_cmd = false;
         }
@@ -1725,7 +1782,8 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
     s_streamTotal = localTotal;
 
     VgmParseState parseState;
-    uint32_t bufTargetBytes = (s_bufTargetKB == 0) ? 512 : (uint32_t)s_bufTargetKB * 1024;
+    s_shadowQueue.clear();
+    uint32_t bufTargetBytes = kBufSizes[s_bufTargetKB];
     if (bufTargetBytes > s_bufTotal) bufTargetBytes = s_bufTotal;
 
     DcLog("[VGM-Stream] Total data: %u bytes\n", localTotal);
@@ -1736,11 +1794,11 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
         uint32_t remain = prefillAmount - s_streamSent;
         size_t toSend = (remain > 60) ? 60 : remain;
         uint16_t newBufLevel = 0;
-        if (!rpfm_send_vgm_data(&localData[localPos], (uint8_t)toSend, &newBufLevel)) {
+        if (!rpfm_send_vgm_data(&localData[localPos], (uint8_t)toSend, &newBufLevel, nullptr)) {
             DcLog("[VGM-Stream] Prefill HID send failed\n");
             s_vgmStreamRunning = false; return 0;
         }
-        // Parse VGM commands for shadow register sync
+        // Parse VGM commands — tick-based, no delay yet (firmware not playing)
         for (size_t i = 0; i < toSend; i++)
             vgm_parse_byte(parseState, localData[localPos + i]);
         s_bufLevel = newBufLevel;
@@ -1763,15 +1821,19 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
 
     // Phase 2: Continue streaming remaining data
     bool allDataSent = (s_streamSent >= localTotal);
+    uint32_t fwTick = 0;
 
     while (s_vgmStreamRunning && s_vgmPlaying) {
+        // Sync shadow registers to firmware's actual playback position
+        s_shadowQueue.flushTo(fwTick);
+
         if (s_vgmPaused) { Sleep(10); continue; }
 
         // Backpressure: wait if firmware buffer is >50% of target
         if (s_bufLevel > bufTargetBytes / 2) {
             uint8_t dummy = 0;
             uint16_t newLevel = 0;
-            if (rpfm_send_vgm_data(&dummy, 0, &newLevel))
+            if (rpfm_send_vgm_data(&dummy, 0, &newLevel, &fwTick))
                 s_bufLevel = newLevel;
             Sleep(1);
             continue;
@@ -1785,20 +1847,20 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
             } else {
                 size_t toSend = (remain > 60) ? 60 : remain;
                 uint16_t newBufLevel = 0;
-                if (!rpfm_send_vgm_data(&localData[localPos], (uint8_t)toSend, &newBufLevel)) {
+                if (!rpfm_send_vgm_data(&localData[localPos], (uint8_t)toSend, &newBufLevel, &fwTick)) {
                     DcLog("[VGM-Stream] HID send failed\n");
                     break;
                 }
-                // Parse VGM commands for shadow register sync
+                // Parse VGM commands into tick-based shadow queue
                 for (size_t i = 0; i < toSend; i++)
                     vgm_parse_byte(parseState, localData[localPos + i]);
                 s_bufLevel = newBufLevel;
                 localPos += toSend;
                 s_streamSent += (uint32_t)toSend;
 
-                if (s_streamTotal > 0) {
-                    s_vgmCurrentSamples = (UINT32)((double)s_vgmTotalSamples * s_streamSent / s_streamTotal);
-                }
+                // Use firmware tick for accurate position tracking
+                s_vgmCurrentSamples = fwTick;
+                s_fwTick = fwTick;
             }
         }
 
@@ -1806,7 +1868,7 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
             // Poll firmware buffer: if drained, playback is complete
             uint8_t dummy = 0;
             uint16_t newLevel = 0;
-            if (rpfm_send_vgm_data(&dummy, 0, &newLevel))
+            if (rpfm_send_vgm_data(&dummy, 0, &newLevel, &fwTick))
                 s_bufLevel = newLevel;
             if (s_bufLevel == 0) {
                 DcLog("[VGM-Stream] Firmware buffer drained, playback complete\n");
@@ -1816,6 +1878,8 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
         }
     }
 
+    // Flush any remaining delayed updates
+    s_shadowQueue.flushAll();
     s_vgmStreamRunning = false;
     return 0;
 }
@@ -2768,12 +2832,20 @@ static void RenderSidebar(void) {
     // Buffer status in buffered mode
     if (s_playbackMode == 1 && s_vgmPlaying) {
         ImGui::Spacing();
-        ImGui::Text("Buffer: %u / %u KB", s_bufLevel / 1024, s_bufTotal / 1024);
+        if (s_bufTotal < 1024)
+            ImGui::Text("Buffer: %u / %u B", s_bufLevel, s_bufTotal);
+        else
+            ImGui::Text("Buffer: %.1f / %.0f KB", s_bufLevel / 1024.0, s_bufTotal / 1024.0);
         float bufRatio = (float)s_bufLevel / (float)s_bufTotal;
         ImGui::ProgressBar(bufRatio, ImVec2(-1, 0));
         ImGui::Text("Stream: %u / %u KB", s_streamSent / 1024, s_streamTotal / 1024);
         float streamRatio = (s_streamTotal > 0) ? (float)s_streamSent / (float)s_streamTotal : 0.0f;
         ImGui::ProgressBar(streamRatio, ImVec2(-1, 0));
+        // Tick display: firmware position / total VGM samples
+        double fwSec = (s_vgmTotalSamples > 0) ? (double)s_fwTick / 44100.0 : 0.0;
+        double totSec = (double)s_vgmTotalSamples / 44100.0;
+        ImGui::Text("Tick: %u / %u", s_fwTick, s_vgmTotalSamples);
+        ImGui::Text("Time: %.1fs / %.1fs", fwSec, totSec);
     }
 
     ImGui::Spacing(); ImGui::Separator();
@@ -2793,11 +2865,9 @@ static void RenderSidebar(void) {
 
     // Buffer target size (affects prefill and backpressure threshold)
     ImGui::TextDisabled("Buffer Size");
-    // Buffer target size
-    const char* bufLabels[] = {"512 B","1 KB","2 KB","3 KB","4 KB"};
-    ImGui::TextDisabled("Buffer Size");
-    if (ImGui::SliderInt("##aybufsz", &s_bufTargetKB, 0, 4, bufLabels[s_bufTargetKB])) {
-        s_bufTotal = (s_bufTargetKB == 0) ? 512 : (uint32_t)s_bufTargetKB * 1024;
+    const char* bufLabels[] = {"64 B","128 B","256 B","512 B","1 KB","2 KB"};
+    if (ImGui::SliderInt("##aybufsz", &s_bufTargetKB, 0, kBufSizeCount - 1, bufLabels[s_bufTargetKB])) {
+        s_bufTotal = kBufSizes[s_bufTargetKB];
         SaveConfig();
     }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip(

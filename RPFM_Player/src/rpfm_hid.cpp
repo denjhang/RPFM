@@ -94,6 +94,7 @@ bool rpfm_hid_send_frame(uint8_t cmd, uint8_t seq,
             resp->ack_seq = r[0];
             resp->status = r[1];
             resp->buf_level = r[2] | (r[3] << 8);
+            resp->tick = r[4] | (r[5] << 8) | (r[6] << 16) | (r[7] << 24);
         } else {
             memset(resp, 0, sizeof(*resp));
         }
@@ -129,11 +130,14 @@ bool rpfm_set_ay_delay(uint8_t delay_100ns) {
     return rpfm_hid_send_frame(CMD_SET_DELAY, 0, payload, 1, NULL);
 }
 
-bool rpfm_send_vgm_data(const uint8_t *data, uint8_t len, uint16_t *buf_level) {
+bool rpfm_send_vgm_data(const uint8_t *data, uint8_t len, uint16_t *buf_level, uint32_t *tick) {
     s_seq = (s_seq + 1) & 0xFF;
     rpfm_resp_t resp;
     bool ok = rpfm_hid_send_frame(CMD_VGM_DATA, s_seq, data, len, &resp);
-    if (ok && buf_level) *buf_level = resp.buf_level;
+    if (ok) {
+        if (buf_level) *buf_level = resp.buf_level;
+        if (tick) *tick = resp.tick;
+    }
     return ok;
 }
 

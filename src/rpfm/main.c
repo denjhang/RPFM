@@ -280,6 +280,12 @@ uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id,
     buffer[1] = s_status;
     buffer[2] = (uint8_t)(used & 0xFF);
     buffer[3] = (uint8_t)((used >> 8) & 0xFF);
+    // Tick: current playback sample position (32-bit LE)
+    uint32_t tick = s_vgm_tick;
+    buffer[4] = (uint8_t)(tick & 0xFF);
+    buffer[5] = (uint8_t)((tick >> 8) & 0xFF);
+    buffer[6] = (uint8_t)((tick >> 16) & 0xFF);
+    buffer[7] = (uint8_t)((tick >> 24) & 0xFF);
 
     return RPFM_FRAME_SIZE;
 }

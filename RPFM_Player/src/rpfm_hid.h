@@ -8,6 +8,7 @@ typedef struct {
     uint8_t ack_seq;
     uint8_t status;
     uint16_t buf_level;
+    uint32_t tick;  // firmware playback sample position (44100 Hz)
 } rpfm_resp_t;
 
 // Open/close RPFM HID device
@@ -28,7 +29,7 @@ bool rpfm_send_reset(void);
 bool rpfm_set_ay_delay(uint8_t delay_us);
 
 // VGM streaming
-bool rpfm_send_vgm_data(const uint8_t *data, uint8_t len, uint16_t *buf_level);
+bool rpfm_send_vgm_data(const uint8_t *data, uint8_t len, uint16_t *buf_level, uint32_t *tick);
 bool rpfm_vgm_start(uint16_t loop_offset, uint8_t *status);
 bool rpfm_vgm_stop(void);
 

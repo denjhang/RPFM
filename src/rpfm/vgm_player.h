@@ -41,6 +41,7 @@ static volatile uint32_t s_vgm_loop_offset = 0;  // 0 = no loop
 static volatile int s_vgm_loop_count = 0;
 static volatile int s_vgm_max_loops = 2;
 static volatile bool s_vgm_started = false;
+static volatile uint32_t s_vgm_tick = 0;  // current playback sample position (44100 Hz)
 
 // Forward declarations from main.c
 static inline void cs_select(uint8_t slot);
@@ -86,6 +87,7 @@ static void core1_vgm_main(void) {
             s_vgm_started = true;
             cycle_us = 0;
             next_sample = 0;
+            s_vgm_tick = 0;
             last_cc = timer_hw->timerawl;
         }
 
@@ -167,6 +169,9 @@ static void core1_vgm_main(void) {
                 if (skip > 1) vgm_skip_bytes(skip - 1);
             }
         }
+
+        // Publish current tick for host sync
+        s_vgm_tick = (uint32_t)next_sample;
     }
 }
 
