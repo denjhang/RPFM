@@ -253,10 +253,8 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
         break;
     }
     case CMD_SET_DELAY: {
-        if (len >= 1 && payload[0] <= 200) {
+        if (len >= 1 && payload[0] <= 200)
             s_ay_delay_100ns = payload[0];
-            ay8910_set_clkdiv(s_bus_pio, s_ay_sm);
-        }
         break;
     }
     case CMD_NOP:
@@ -313,6 +311,9 @@ int main() {
 
     // Init TinyUSB device stack
     tud_init(BOARD_TUD_RHPORT);
+
+    // Launch VGM player on Core 1 (MegaGRRL-style cycle counter loop)
+    multicore_launch_core1(core1_vgm_main);
 
     s_ws_ready = true;
     cs_select(0);

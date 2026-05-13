@@ -81,42 +81,39 @@ static inline void ym2413_pio_write_reg(PIO pio, uint sm,
     pio_bus_put(pio, sm, BUS_IDLE);
 }
 
-// AY8910: fully non-blocking write from ISR
-// Uses dedicated SM with clkdiv to control /WR pulse timing
-// ISR only pushes 7 words to FIFO (never waits for drain)
-// Timing is entirely hardware-controlled by PIO clock divider
+// AY8910: blocking write with software delay, runs on Core 1
+// Core 1 is dedicated to VGM playback, blocking is fine
+// Timing controlled by busy_wait_us_32 or NOP spin loop
 extern volatile uint8_t s_ay_delay_100ns;  // units of 100ns
 
-// Set AY SM clkdiv at runtime: each word = 2 PIO cycles
-// Target: delay_100ns * 100ns per word = clkdiv * 8ns * 2
-// clkdiv = delay_100ns * 100 / 16 = delay_100ns * 6.25
-static inline void ay8910_set_clkdiv(PIO pio, uint sm) {
-    uint32_t div = (uint32_t)s_ay_delay_100ns * 6 + (uint32_t)s_ay_delay_100ns / 4;
-    if (div < 1) div = 1;
-    pio_sm_set_clkdiv(pio, sm, div);
+static inline void ay_delay_100ns(uint8_t d) {
+    if (d == 0) return;
+    // 125MHz = 8ns/cycle. 100ns ≈ 12 cycles.
+    uint32_t cycles = (uint32_t)d * 12;
+    while (cycles >= 4) { __nop(); __nop(); __nop(); __nop(); cycles -= 4; }
+    while (cycles--) { __nop(); }
 }
 
 static inline void ay8910_pio_write_reg(PIO pio, uint sm,
                                          uint8_t reg, uint8_t data) {
-    // Non-blocking: push 7 words, FIFO is 8 deep so one burst fits
-    pio_sm_put_blocking(pio, sm, pack_bus(reg, 0, true, true));
-    pio_sm_put_blocking(pio, sm, pack_bus(reg, 0, false, true));
-    pio_sm_put_blocking(pio, sm, pack_bus(reg, 0, true, true));
-    pio_sm_put_blocking(pio, sm, pack_bus(data, 1, true, true));
-    pio_sm_put_blocking(pio, sm, pack_bus(data, 1, false, true));
-    pio_sm_put_blocking(pio, sm, pack_bus(data, 1, true, true));
-    pio_sm_put_blocking(pio, sm, BUS_IDLE);
+    uint8_t d = s_ay_delay_100ns;
+    pio_bus_put(pio, sm, pack_bus(reg, 0, true, true));
+    pio_bus_put(pio, sm, pack_bus(reg, 0, false, true));
+    ay_delay_100ns(d);
+    pio_bus_put(pio, sm, pack_bus(reg, 0, true, true));
+    pio_bus_put(pio, sm, pack_bus(data, 1, true, true));
+    pio_bus_put(pio, sm, pack_bus(data, 1, false, true));
+    ay_delay_100ns(d);
+    pio_bus_put(pio, sm, pack_bus(data, 1, true, true));
+    pio_bus_put(pio, sm, BUS_IDLE);
 }
 
-// Init AY8910 dedicated SM — clkdiv controls timing
+// Init AY8910 dedicated SM — full speed, timing via software delay on Core 1
 static inline void ay8910_sm_init(PIO pio, uint sm, uint offset, uint base_pin) {
     pio_sm_config c = pio_get_default_sm_config();
 
     sm_config_set_out_pins(&c, base_pin, 14);
     sm_config_set_out_shift(&c, true, true, 32);
-    uint32_t div = (uint32_t)s_ay_delay_100ns * 6 + (uint32_t)s_ay_delay_100ns / 4;
-    if (div < 1) div = 1;
-    sm_config_set_clkdiv(&c, div);
     sm_config_set_wrap(&c, offset, offset + 1);
 
     for (int i = 0; i < 14; i++) {
