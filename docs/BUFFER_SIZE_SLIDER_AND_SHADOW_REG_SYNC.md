@@ -1,4 +1,4 @@
-# 缓冲区大小滑块 + Tick 同步影子寄存器
+# 缓冲区大小滑块 + 影子寄存器可视化同步
 
 ## 状态：已实现 ✅
 
@@ -13,97 +13,79 @@
 
 ### 方案
 
-**不改固件**：缓冲区大小由固件编译时决定（CMD_BUF_SIZE）。上位机滑块只控制上位机端的发送策略（预填量、背压阈值）。
+**不改固件**：缓冲区大小由固件编译时决定（CMD_BUF_SIZE = 32KB）。上位机滑块控制上位机端的发送策略（预填量、背压阈值）。
 
 `RPFM_Player/src/ay8910_window.cpp`:
 - 侧边栏加滑块 "Buffer Size"
-- 范围：64B / 128B / 256B / 512B / 1KB / 2KB
+- 范围：512B / 1KB / 2KB / 3KB / 4KB / 8KB（默认 512B）
 - 影响 VGMStreamThread 的 `prefillAmount` 和背压阈值
 - 持久化到 config
 
-## 二、Tick 同步影子寄存器
+## 二、缓冲模式可视化同步
 
-### 方案
+### 方案：即时 apply（不用 tick 延迟队列）
 
-固件 Core 1 VGM 播放器回报当前播放 tick（sample position），上位机根据实际 tick 决定何时 apply 影子寄存器更新，实现可视化与硬件精确同步。
+缓冲模式下 `vgm_parse_byte` 解析到 AY8910 寄存器写入时直接调用 `UpdateAY8910State` / `UpdateAY8910State2`，不走 tick-based shadow queue。
 
-### 固件改动
+**为什么不用 tick 同步**：
+
+原方案用 `flushTo(fwTick)` 只 apply 固件已播放到的位置。但 fwTick 是固件 Core 1
+实际播放位置，缓冲越大 fwTick 滞后越严重（8KB ≈ 180ms 延迟），导致可视化卡顿。
+
+**为什么不改固件加回调**：
+
+Core 1 是 44100Hz sample-accurate tight loop，任何中断/回调都会破坏时序精度。
+固件 Core 1 不能被打断。
+
+**当前方案**：
+
+```
+上位机解析 VGM → vgm_parse_byte → UpdateAY8910State (即时 apply)
+                                    ↓
+                         UI 读取影子寄存器 → 即时可视化
+```
+
+进度条仍用固件返回的 `s_vgm_tick`（真实播放位置），可视化跟数据发送同步。
+可视化比声音超前一个缓冲区延迟（512B ≈ 10ms，用户无感）。
+
+### 固件改动（tick 用于进度条）
 
 `src/rpfm/vgm_player.h`:
-- 新增 `volatile uint32_t s_vgm_tick` — Core 1 每处理完一批 VGM 命令后写入 `next_sample`
-- 播放开始时 `s_vgm_tick = 0`
+- `volatile uint32_t s_vgm_tick` — Core 1 每处理完一批命令后写入 `next_sample`
 
 `src/rpfm/main.c`:
 - HID 响应帧 bytes[4-7] 写入 `s_vgm_tick`（32-bit LE）
-- 原有 bytes[0-3] 不变（ack_seq, status, buf_level）
-
-### 上位机解析状态机
-
-VGMStreamThread 在发送 VGM 字节流的同时，同步解析命令追踪 sample tick：
-
-```cpp
-struct VgmParseState {
-    bool in_cmd = false;
-    uint8_t cmd = 0;
-    uint8_t bytes_remaining = 0;
-    uint8_t cmd_buf[4];
-    int buf_pos = 0;
-    uint32_t currentTick = 0;  // 追踪 sample 位置
-};
-```
-
-- 0x61 命令：`currentTick += lo | (hi << 8)`
-- 0x62 命令：`currentTick += 735`（NTSC frame）
-- 0x63 命令：`currentTick += 882`（PAL frame）
-- 0x70-0x7F 命令：`currentTick += (cmd & 0x0F) + 1`
-- 0xA0 命令：入队 `{reg, data, chipID, currentTick}`
-
-### Tick 驱动延迟队列
-
-```cpp
-struct ShadowRegDelayQueue {
-    // 每个 update 带 VGM sample tick
-    void push(uint8_t reg, uint8_t data, uint8_t chipID, uint32_t tick);
-    // 只 apply tick <= fwTick 的更新
-    void flushTo(uint32_t fwTick);
-};
-```
-
-VGMStreamThread 每次与固件 HID 通信时获取 `fwTick`，调 `flushTo(fwTick)` 只 apply 固件已经播放到的位置。
-
-### 通信路径
-
-```
-上位机解析 VGM → {reg, data, chipID, tick} 入队
-                        ↓
-固件 HID 响应 → fwTick（当前播放 sample 位置）
-                        ↓
-flushTo(fwTick) → 只 apply tick <= fwTick 的更新到影子寄存器
-                        ↓
-UI 读取影子寄存器 → 钢琴键盘/电平表/音高显示
-```
 
 ### 侧边栏 Tick 显示
 
-缓冲模式播放时显示：
 ```
 Tick: 12345 / 88200
 Time: 0.3s / 2.0s
 ```
 
+## 三、播放稳定性
+
+详见 [PLAYBACK_STABILITY.md](PLAYBACK_STABILITY.md)。
+
+核心改动：
+- HID 写入 3 次重试（CPU 高负载时保底）
+- 缓冲模式用 1ms 多媒体定时器替代 `Sleep(1)` 轮询
+- 播放线程 HID 失败时重试而非直接退出
+
 ## 文件清单
 
 | 文件 | 改动 |
 |------|------|
-| `src/rpfm/vgm_player.h` | 新增 `s_vgm_tick`，Core 1 每轮写入 |
+| `src/rpfm/vgm_player.h` | `s_vgm_tick`，Core 1 每轮写入 |
 | `src/rpfm/main.c` | HID 响应帧 bytes[4-7] 写入 tick |
-| `RPFM_Player/src/rpfm_hid.h` | `rpfm_resp_t` 加 `tick` 字段，`rpfm_send_vgm_data` 加 tick 参数 |
-| `RPFM_Player/src/rpfm_hid.cpp` | 解析 HID 响应 byte[4-7] 为 tick |
-| `RPFM_Player/src/ay8910_window.cpp` | VGM 解析状态机追踪 tick + tick 驱动延迟队列 + 缓冲区滑块 + 侧边栏显示 |
+| `RPFM_Player/src/rpfm_hid.h` | `rpfm_resp_t` 加 `tick` 字段 |
+| `RPFM_Player/src/rpfm_hid.cpp` | 解析 HID 响应 byte[4-7] 为 tick + 写入重试 |
+| `RPFM_Player/src/ay8910_window.cpp` | 缓冲区滑块 + 即时可视化 + 多媒体定时器 + 失败恢复 |
 
 ## 验证
 
-1. 缓冲区滑块：64B-2KB 范围，调整后播放正常
-2. 影子寄存器：缓冲模式下钢琴键盘、音高显示、电平表与硬件声音同步
-3. Tick 显示：侧边栏显示固件当前 tick 和总 tick，与实际播放位置一致
-4. 切换回实时模式不受影响
+1. 缓冲区滑块：512B-8KB 范围，调整后播放正常
+2. 可视化：缓冲模式下钢琴键盘、电平表即时响应，不受缓冲大小影响
+3. Tick 显示：侧边栏显示固件真实播放 tick
+4. 稳定性：CPU 高负载时播放不中断
+5. 切换回实时模式不受影响
