@@ -82,20 +82,32 @@ static inline void ym2413_pio_write_reg(PIO pio, uint sm,
 }
 
 // AY8910: PIO write with software-controlled per-step delay
-// SM runs at full speed, timing comes from busy_wait_us_32 in ISR
-// delay_us is safe in ISR context because timer IRQ is at highest priority
-extern volatile uint8_t s_ay_delay_us;
+// SM runs at full speed, timing from busy_wait or NOP spin loop
+// delay is in units of 100ns (0-200 = 0-20µs)
+// Timer IRQ at highest priority, so busy_wait/NOP are cycle-exact
+extern volatile uint8_t s_ay_delay_100ns;  // units of 100ns
+
+static inline void ay_delay_100ns(uint8_t d) {
+    // 125MHz = 8ns/cycle. 100ns = 12.5 cycles. Each nop = 1 cycle.
+    // Approximate: d * 12.5 cycles. Loop overhead ~3 cycles per iter.
+    // Use simple NOP burst for small values, busy_wait for large.
+    if (d == 0) return;
+    uint32_t cycles = (uint32_t)d * 12;
+    // Each __nop() is 1 cycle, unrolled in groups of 4
+    while (cycles >= 4) { __nop(); __nop(); __nop(); __nop(); cycles -= 4; }
+    while (cycles--) { __nop(); }
+}
 
 static inline void ay8910_pio_write_reg(PIO pio, uint sm,
                                          uint8_t reg, uint8_t data) {
-    uint8_t d = s_ay_delay_us;
+    uint8_t d = s_ay_delay_100ns;
     pio_bus_put(pio, sm, pack_bus(reg, 0, true, true));
     pio_bus_put(pio, sm, pack_bus(reg, 0, false, true));
-    if (d) busy_wait_us_32(d);
+    ay_delay_100ns(d);
     pio_bus_put(pio, sm, pack_bus(reg, 0, true, true));
     pio_bus_put(pio, sm, pack_bus(data, 1, true, true));
     pio_bus_put(pio, sm, pack_bus(data, 1, false, true));
-    if (d) busy_wait_us_32(d);
+    ay_delay_100ns(d);
     pio_bus_put(pio, sm, pack_bus(data, 1, true, true));
     pio_bus_put(pio, sm, BUS_IDLE);
 }

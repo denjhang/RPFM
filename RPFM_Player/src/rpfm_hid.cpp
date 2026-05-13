@@ -123,9 +123,9 @@ bool rpfm_send_reset(void) {
     return rpfm_hid_send_frame(CMD_RESET, 1, payload, 1, NULL);
 }
 
-bool rpfm_set_ay_delay(uint8_t delay_us) {
-    if (delay_us > 20) delay_us = 20;
-    uint8_t payload[1] = {delay_us};
+bool rpfm_set_ay_delay(uint8_t delay_100ns) {
+    if (delay_100ns > 200) delay_100ns = 200;
+    uint8_t payload[1] = {delay_100ns};
     return rpfm_hid_send_frame(CMD_SET_DELAY, 0, payload, 1, NULL);
 }
 

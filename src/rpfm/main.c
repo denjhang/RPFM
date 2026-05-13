@@ -49,7 +49,7 @@ static cmd_buf_t s_cmd;
 // ========== Protocol State ==========
 static volatile uint8_t s_last_seq = 0;
 static volatile uint8_t s_status = 0;
-volatile uint8_t s_ay_delay_us = 1;  // AY8910 /WR pulse delay (µs), runtime adjustable
+volatile uint8_t s_ay_delay_100ns = 10;  // AY8910 /WR pulse delay (100ns units), default 1µs
 
 // VGM player (needs s_status, cs_select, write_reg_ay — declared below via forward decls in vgm_player.h)
 #include "vgm_player.h"
@@ -253,8 +253,8 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
         break;
     }
     case CMD_SET_DELAY: {
-        if (len >= 1 && payload[0] <= 20)
-            s_ay_delay_us = payload[0];
+        if (len >= 1 && payload[0] <= 200)
+            s_ay_delay_100ns = payload[0];
         break;
     }
     case CMD_NOP:

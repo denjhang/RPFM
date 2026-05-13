@@ -2707,15 +2707,15 @@ static void RenderSidebar(void) {
     ImGui::Spacing(); ImGui::Separator();
 
     // PIO Write Delay
-    static int s_ayDelayUs = 1;
-    ImGui::TextDisabled("PIO Write Delay: %d us", s_ayDelayUs);
+    static int s_ayDelayNs = 1000;
+    ImGui::TextDisabled("PIO Write Delay: %d ns", s_ayDelayNs);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip(
-        "AY8910 /WR pulse width in microseconds.\n"
+        "AY8910 /WR pulse width in nanoseconds.\n"
         "Higher = slower but more reliable timing.\n"
         "0 = fastest (PIO full speed).");
-    if (ImGui::SliderInt("##aydelay", &s_ayDelayUs, 0, 20, "%d us")) {
+    if (ImGui::SliderInt("##aydelay", &s_ayDelayNs, 0, 2000, "%d ns")) {
         if (SPFMManager::IsConnected()) {
-            rpfm_set_ay_delay((uint8_t)s_ayDelayUs);
+            rpfm_set_ay_delay((uint8_t)((s_ayDelayNs + 50) / 100));
         }
     }
 
