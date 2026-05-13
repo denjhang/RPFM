@@ -226,6 +226,8 @@ static uint8_t s_envShape = 0;        // Reg 0x0D
 // Tone/noise active state (from mixer reg, 0=on, 1=off)
 static bool s_toneOn[3] = {};
 static bool s_noiseOn[3] = {};
+static bool s_chEnvOnly[3] = {};  // tone+noise both off but env mode (bit4) on
+static bool s_chDacMode[3] = {};  // tone+noise both off but vol > 0 (DAC mode)
 
 // ============ 2nd AY8910 Register Shadow ============
 static uint8_t s2_toneFine[3] = {};
@@ -238,6 +240,8 @@ static uint8_t s2_envCoarse = 0;
 static uint8_t s2_envShape = 0;
 static bool s2_toneOn[3] = {};
 static bool s2_noiseOn[3] = {};
+static bool s2_chEnvOnly[3] = {};
+static bool s2_chDacMode[3] = {};
 
 // ============ Piano State ============
 static const int AY_PIANO_LOW = 24;   // C1
@@ -439,9 +443,9 @@ UINT8 UpdateAY8910State(UINT16 reg, UINT8 data) {
             s_toneOn[i] = !(data & (1 << i));
             s_noiseOn[i] = !(data & (1 << (i + 3)));
         }
-        // Key-on: tone enabled AND volume > 0 (same logic as libvgm)
+        // Key-on: volume > 0 regardless of tone/noise state
         for (int i = 0; i < 3; i++) {
-            bool new_on = s_toneOn[i] && ((s_vol[i] & 0x1F) > 0);
+            bool new_on = (s_vol[i] & 0x1F) > 0;
             if (new_on) {
                 if (s_chKeyOff[i]) s_chKeyOnEdge[i] = true; // rising edge
                 s_chDecay[i] = 1.0f; s_chKeyOff[i] = false;
@@ -455,8 +459,8 @@ UINT8 UpdateAY8910State(UINT16 reg, UINT8 data) {
     } else if (reg >= 0x08 && reg <= 0x0A) {
         int ch = reg - 0x08;
         s_vol[ch] = data;
-        // Key-on detection: tone enabled AND volume > 0 (libvgm style)
-        bool new_on = s_toneOn[ch] && ((data & 0x1F) > 0);
+        // Key-on: volume > 0 regardless of tone/noise state
+        bool new_on = (data & 0x1F) > 0;
         if (new_on) {
             if (s_chKeyOff[ch]) s_chKeyOnEdge[ch] = true; // rising edge
             s_chDecay[ch] = 1.0f; s_chKeyOff[ch] = false;
@@ -515,7 +519,7 @@ UINT8 UpdateAY8910State2(UINT16 reg, UINT8 data) {
             s2_noiseOn[i] = !(data & (1 << (i + 3)));
         }
         for (int i = 0; i < 3; i++) {
-            bool new_on = s2_toneOn[i] && ((s2_vol[i] & 0x1F) > 0);
+            bool new_on = (s2_vol[i] & 0x1F) > 0;
             if (new_on) {
                 if (s2_chKeyOff[i]) s2_chKeyOnEdge[i] = true;
                 s2_chDecay[i] = 1.0f; s2_chKeyOff[i] = false;
@@ -528,7 +532,7 @@ UINT8 UpdateAY8910State2(UINT16 reg, UINT8 data) {
     } else if (reg >= 0x08 && reg <= 0x0A) {
         int ch = reg - 0x08;
         s2_vol[ch] = data;
-        bool new_on = s2_toneOn[ch] && ((data & 0x1F) > 0);
+        bool new_on = (data & 0x1F) > 0;
         if (new_on) {
             if (s2_chKeyOff[ch]) s2_chKeyOnEdge[ch] = true;
             s2_chDecay[ch] = 1.0f; s2_chKeyOff[ch] = false;
@@ -721,6 +725,8 @@ static void ResetState(void) {
     memset(s_chFreqAnchor, 0, sizeof(s_chFreqAnchor));
     memset(s_chSmoothPoff, 0, sizeof(s_chSmoothPoff));
     memset(s_chPrevRawPoff, 0, sizeof(s_chPrevRawPoff));
+    memset(s_chEnvOnly, false, sizeof(s_chEnvOnly));
+    memset(s_chDacMode, false, sizeof(s_chDacMode));
     s_noiseDecay = 0;
     s_envDecay = 0;
     // 2nd chip UI
@@ -731,6 +737,8 @@ static void ResetState(void) {
     memset(s2_chFreqAnchor, 0, sizeof(s2_chFreqAnchor));
     memset(s2_chSmoothPoff, 0, sizeof(s2_chSmoothPoff));
     memset(s2_chPrevRawPoff, 0, sizeof(s2_chPrevRawPoff));
+    memset(s2_chEnvOnly, false, sizeof(s2_chEnvOnly));
+    memset(s2_chDacMode, false, sizeof(s2_chDacMode));
     s2_noiseDecay = 0;
     s2_envDecay = 0;
     memset(s2_channelLevel, 0, sizeof(s2_channelLevel));
@@ -1043,52 +1051,52 @@ static void NavToParent(void) {
 // Helper: process tone channels for one chip
 static void UpdateToneChannelLevels(
     int chBase, // 0 for chip0, 5 for chip1
-    const uint8_t* vol, const bool* toneOn, const bool* /*noiseOn*/,
+    const uint8_t* vol, const bool* toneOn, const bool* noiseOn,
     float* chDecay, bool* chKeyOff, bool* chKeyOnEdge,
     float* channelLevel,
     double* chFreq, double* chFreqAnchor, float* smoothPoff, float* prevRawPoff,
-    int (*midiNoteFn)(int))
+    int (*midiNoteFn)(int),
+    bool* chEnvOnly, bool* chDacMode)
 {
     for (int i = 0; i < 3; i++) {
         int chIdx = chBase + i;
         bool useEnv = vol[i] & 0x10;
         uint8_t v = vol[i] & 0x0F;
-        bool keyoff = chKeyOff[i];
         bool ton = toneOn[i];
+        bool noi = noiseOn[i];
+        bool anyOn = ton || noi;
 
-        if (keyoff || !ton) {
+        // Update mode flags
+        chEnvOnly[i] = (!anyOn && useEnv);
+        chDacMode[i] = (!anyOn && !useEnv && v > 0);
+
+        // Level meter: real volume + fast decay when vol drops to 0
+        float rawLv = v / 15.0f;
+        if (v > 0) {
+            chDecay[i] = rawLv;
+        } else {
             chDecay[i] *= 0.85f;
             if (chDecay[i] < 0.01f) chDecay[i] = 0.0f;
-        } else {
-            chDecay[i] *= 0.98f;
-            if (chDecay[i] < 0.01f) chDecay[i] = 0.0f;
         }
-
-        float lv;
-        if (useEnv) {
-            lv = chDecay[i];
-        } else {
-            lv = (v >= 15) ? 0.0f : (1.0f - (float)v / 15.0f) * chDecay[i];
-        }
-        channelLevel[chIdx] += (lv - channelLevel[chIdx]) * 0.3f;
-        if (channelLevel[chIdx] < 0.001f) channelLevel[chIdx] = 0.0f;
+        channelLevel[chIdx] = chDecay[i];
 
         if (s_chMuted[chIdx]) continue;
 
-        bool kon = chDecay[i] > 0.01f;
-        if (kon && channelLevel[chIdx] > 0.01f) {
+        // Piano keyboard: show key when volume > 0 or ENV mode active
+        float pianoLv = (v > 0) ? rawLv : (useEnv ? 1.0f : 0.0f);
+        if (pianoLv > 0.01f) {
             int midi = midiNoteFn(i);
             if (midi >= AY_PIANO_LOW && midi <= AY_PIANO_HIGH) {
                 int idx = midi - AY_PIANO_LOW;
                 int& cnt = s_pianoKeyChCount[idx];
                 if (cnt < AY_NUM_CHANNELS) {
                     s_pianoKeyChannels[idx][cnt] = chIdx;
-                    s_pianoKeyChLevels[idx][cnt] = channelLevel[chIdx];
+                    s_pianoKeyChLevels[idx][cnt] = pianoLv;
                     cnt++;
                 }
-                if (!s_pianoKeyOn[idx] || channelLevel[chIdx] > s_pianoKeyLevel[idx]) {
+                if (!s_pianoKeyOn[idx] || pianoLv > s_pianoKeyLevel[idx]) {
                     s_pianoKeyOn[idx] = true;
-                    s_pianoKeyLevel[idx] = channelLevel[chIdx];
+                    s_pianoKeyLevel[idx] = pianoLv;
                     s_pianoKeyChannel[idx] = chIdx;
                 }
 
@@ -1119,7 +1127,7 @@ static void UpdateToneChannelLevels(
                 }
             }
         }
-        if (!kon) {
+        if (pianoLv <= 0.01f) {
             chFreqAnchor[i] = 0.0;
             smoothPoff[i] = 0.0f;
             prevRawPoff[i] = 0.0f;
@@ -1134,9 +1142,6 @@ static void UpdateNoiseChannelLevel(
     const bool* noiseOn, const uint8_t* vol,
     float& noiseDecay, float* channelLevel)
 {
-    noiseDecay *= 0.80f;
-    if (noiseDecay < 0.01f) noiseDecay = 0.0f;
-
     bool anyNoiseOn = false;
     for (int i = 0; i < 3; i++) if (noiseOn[i]) { anyNoiseOn = true; break; }
 
@@ -1149,9 +1154,7 @@ static void UpdateNoiseChannelLevel(
             }
         }
     }
-    float noiseLv = anyNoiseOn ? noiseDecay * maxNVol : 0.0f;
-    channelLevel[chIdx] += (noiseLv - channelLevel[chIdx]) * 0.3f;
-    if (channelLevel[chIdx] < 0.001f) channelLevel[chIdx] = 0.0f;
+    channelLevel[chIdx] = anyNoiseOn ? maxNVol : 0.0f;
 
     // Noise piano key mapping
     if (!s_chMuted[chIdx] && channelLevel[chIdx] > 0.01f) {
@@ -1185,40 +1188,29 @@ static void UpdateEnvChannelLevel(
     float& envDecay, float* channelLevel)
 {
     UINT16 envPeriod = ((UINT16)envCoarse << 8) | envFine;
-    bool envUsedAsTone = false;
-    for (int i = 0; i < 3; i++) {
-        if ((vol[i] & 0x10) && envPeriod > 0 && envPeriod < 200)
-            envUsedAsTone = true;
-    }
-
     int envSteps = 32;
     if ((envShape & 0x0F) == 10 || (envShape & 0x0F) == 14) envSteps = 64;
 
-    bool envOn = envUsedAsTone && envPeriod > 0;
-
-    if (!envOn) {
-        envDecay *= 0.85f;
-        if (envDecay < 0.01f) envDecay = 0.0f;
-    } else {
-        envDecay *= 0.98f;
-        if (envDecay < 0.01f) envDecay = 0.0f;
-    }
-
+    // Check if any channel has ENV mode on
+    bool envActive = false;
     float maxEVol = 0.0f;
-    if (envOn) {
-        for (int i = 0; i < 3; i++) {
-            if (vol[i] & 0x10) {
-                float v = (vol[i] & 0x0F) / 15.0f;
-                if (v > maxEVol) maxEVol = v;
-            }
+    for (int i = 0; i < 3; i++) {
+        if (vol[i] & 0x10) {
+            envActive = true;
+            float v = (vol[i] & 0x0F) / 15.0f;
+            if (v > maxEVol) maxEVol = v;
         }
     }
-    float envLv = envOn ? envDecay * (maxEVol > 0 ? maxEVol : 1.0f) : envDecay * 0.5f;
-    channelLevel[chIdx] += (envLv - channelLevel[chIdx]) * 0.3f;
-    if (channelLevel[chIdx] < 0.001f) channelLevel[chIdx] = 0.0f;
+
+    // ENV channel level: borrow max vol from ENV-enabled channels, full amplitude if all vol=0
+    float envLv = 0.0f;
+    if (envActive) {
+        envLv = (maxEVol > 0) ? maxEVol : 1.0f;
+    }
+    channelLevel[chIdx] = envLv;
 
     // Envelope piano key mapping
-    if (!s_chMuted[chIdx] && envOn && channelLevel[chIdx] > 0.01f && envPeriod > 0) {
+    if (!s_chMuted[chIdx] && envActive && channelLevel[chIdx] > 0.01f && envPeriod > 0) {
         double eFreq = s_ay8910Clock / (8.0 * envPeriod * envSteps);
         if (eFreq > 0.0) {
             int eMidi = (int)round(69.0 + 12.0 * log2(eFreq / 440.0));
@@ -1254,7 +1246,7 @@ static void UpdateChannelLevels(void) {
     UpdateToneChannelLevels(0, s_vol, s_toneOn, s_noiseOn,
         s_chDecay, s_chKeyOff, s_chKeyOnEdge,
         s_channelLevel, s_chFreq, s_chFreqAnchor, s_chSmoothPoff, s_chPrevRawPoff,
-        period_to_midi_note);
+        period_to_midi_note, s_chEnvOnly, s_chDacMode);
     UpdateNoiseChannelLevel(3, s_noisePeriod, s_noiseOn, s_vol,
         s_noiseDecay, s_channelLevel);
     UpdateEnvChannelLevel(4, s_vol, s_envFine, s_envCoarse, s_envShape,
@@ -1264,7 +1256,7 @@ static void UpdateChannelLevels(void) {
     UpdateToneChannelLevels(5, s2_vol, s2_toneOn, s2_noiseOn,
         s2_chDecay, s2_chKeyOff, s2_chKeyOnEdge,
         s_channelLevel, s2_chFreq, s2_chFreqAnchor, s2_chSmoothPoff, s2_chPrevRawPoff,
-        period_to_midi_note2);
+        period_to_midi_note2, s2_chEnvOnly, s2_chDacMode);
     UpdateNoiseChannelLevel(8, s2_noisePeriod, s2_noiseOn, s2_vol,
         s2_noiseDecay, s_channelLevel);
     UpdateEnvChannelLevel(9, s2_vol, s2_envFine, s2_envCoarse, s2_envShape,
@@ -2647,19 +2639,55 @@ static void RenderLevelMeters(void) {
         }
 
         // Volume / status text
-        char volStr[8];
+        char volStr[16];
         {
             int chip = i / AY_CH_PER_CHIP;
             int ch = i % AY_CH_PER_CHIP;
             if (ch < 3) {
-                uint8_t vol = (chip == 0 ? s_vol[ch] : s2_vol[ch]) & 0x0F;
-                snprintf(volStr, sizeof(volStr), "%d", vol);
+                const uint8_t* pVol = (chip == 0) ? s_vol : s2_vol;
+                const bool* pToneOn = (chip == 0) ? s_toneOn : s2_toneOn;
+                const bool* pNoiseOn = (chip == 0) ? s_noiseOn : s2_noiseOn;
+                const bool* pEnvOnly = (chip == 0) ? s_chEnvOnly : s2_chEnvOnly;
+                uint8_t rawVol = pVol[ch];
+                uint8_t v = rawVol & 0x0F;
+                bool ton = pToneOn[ch];
+                bool noi = pNoiseOn[ch];
+                bool anyOn = ton || noi;
+                if (!anyOn && v > 0) {
+                    snprintf(volStr, sizeof(volStr), "DAC:%d", v);  // DAC mode: tone+noise off but vol > 0
+                } else {
+                    snprintf(volStr, sizeof(volStr), "%d", v);  // show real volume register value
+                }
             } else if (ch == 3) {
-                uint8_t np = (chip == 0 ? s_noisePeriod : s2_noisePeriod) & 0x1F;
-                snprintf(volStr, sizeof(volStr), "N%d", np);
+                // Noise ch: show max volume of noise-enabled tone channels
+                const uint8_t* pVol = (chip == 0) ? s_vol : s2_vol;
+                const bool* pNoiseOn = (chip == 0) ? s_noiseOn : s2_noiseOn;
+                uint8_t maxVol = 0;
+                for (int j = 0; j < 3; j++) {
+                    if (pNoiseOn[j]) {
+                        uint8_t v = pVol[j] & 0x0F;
+                        if (v > maxVol) maxVol = v;
+                    }
+                }
+                snprintf(volStr, sizeof(volStr), "%d", maxVol);
             } else {
-                uint8_t es = (chip == 0 ? s_envShape : s2_envShape) & 0x0F;
-                snprintf(volStr, sizeof(volStr), "E%X", es);
+                // Env ch: show max volume of env-enabled tone channels
+                const uint8_t* pVol = (chip == 0) ? s_vol : s2_vol;
+                uint8_t maxVol = 0;
+                bool envActive = false;
+                for (int j = 0; j < 3; j++) {
+                    if (pVol[j] & 0x10) {
+                        envActive = true;
+                        uint8_t v = pVol[j] & 0x0F;
+                        if (v > maxVol) maxVol = v;
+                    }
+                }
+                if (envActive && maxVol == 0)
+                    snprintf(volStr, sizeof(volStr), "ENV");  // ENV mode but vol=0: full amplitude
+                else if (envActive)
+                    snprintf(volStr, sizeof(volStr), "%d", maxVol);  // borrow vol from env channels
+                else
+                    snprintf(volStr, sizeof(volStr), "0");
             }
         }
         ImVec2 volSize = ImGui::CalcTextSize(volStr);

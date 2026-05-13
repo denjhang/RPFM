@@ -1,124 +1,105 @@
 # AY8910 音量条/电平表显示逻辑改造
 
-## 状态：计划中
+## 状态：已完成
 
 ## Context
 
-当前 ch0-2 (Tone A/B/C) 的音量条只在 toneOn=true 时显示，noise only、env mode、DAC mode 都不显示。
-ch3 (Noise) 和 ch4 (Env) 下方文字显示的是 N+period / E+shape，没有反映实际音量。
-需要改为更直观的显示：ch0-2 统一音量条，ch3/4 显示关联通道的音量信息。
+原始问题：
+- ch0-2 (Tone A/B/C) 音量条只在 toneOn=true 时显示，noise only、env mode、DAC mode 都不显示
+- ch3 (Noise) 和 ch4 (Env) 下方文字显示的是 N+period / E+shape，没有反映实际音量
+- 需要统一显示：ch0-2 始终反映真实音量寄存器值，ch3/4 借用关联方波通道音量
 
 ## 改动文件
 
 `RPFM_Player/src/ay8910_window.cpp`
 
-## 一、ch0-2 (Tone A/B/C) 音量条逻辑改造
+## 核心规则
 
-### 当前逻辑 (UpdateToneChannelLevels, line ~1044)
+### ch0-2 (方波通道 A/B/C)
 
-- `chDecay[i]` 只在 `toneOn=true && vol>0` 时维持，否则快速衰减
-- 音量条只响应 tone 开启状态
+**音量条**：直接反映音量寄存器值 `vol & 0x0F`，线性映射 `v / 15.0f`。
+- v > 0 时：音量条 = 真实音量
+- v = 0 时：快衰减 (×0.85)，营造视觉释放感
+- 不受 T/E/N 模式影响
 
-### 改为
+**下方文字**：
+- DAC 模式 (tone+noise 全关, vol > 0, 非 ENV)：显示 "DAC:vol"
+- 其他情况：显示真实音量数字 (0-15)
 
-ch0-2 只要 volume > 0 就显示音量条，不管 tone/noise/env 状态。
+### ch3 (Noise 通道)
 
-新增状态标记：
+**音量条**：借用 noiseOn 的方波通道中最大音量值，无衰减。
+- 任何方波通道 noiseOn=true → 取 `(vol[j] & 0x0F) / 15.0f` 最大值
+- 全部 noiseOn=false → 音量条为 0
+
+**下方文字**：显示 noiseOn 通道中的最大音量数字。
+
+### ch4 (Envelope 通道)
+
+**音量条**：借用 ENV 模式 (bit4=1) 的方波通道中最大音量值。
+- 有 ENV 通道且 maxVol > 0 → `maxVol / 15.0f`
+- 有 ENV 通道但全部 vol=0 → 满幅度 (1.0f)
+- 无 ENV 通道 → 音量条为 0
+
+**下方文字**：
+- ENV 通道全部 vol=0 → 显示 "ENV"
+- 有 vol > 0 的 ENV 通道 → 显示最大音量数字
+- 无 ENV 通道 → 显示 "0"
+
+### 钢琴键盘
+
+- vol > 0 → 按真实音量亮起
+- vol = 0 但 ENV 模式开启 (bit4=1) → 满幅度亮起，显示音高
+- 纯真实音量驱动，不衰减
+
+## 代码关键修改
+
+### UpdateToneChannelLevels
 
 ```cpp
-static bool s_chEnvOnly[3] = {};  // tone+noise both off but env mode on
-static bool s_chDacMode[3] = {};  // tone+noise both off but vol > 0
-```
-
-key-on 触发条件改为：
-
-```cpp
-bool new_on = (vol[i] & 0x1F) > 0;  // 不再要求 toneOn
-```
-
-`chDecay[i]` 衰减逻辑：
-
-```cpp
-bool anyOn = ton || noi;
-if (new_on && anyOn) {
-    chDecay[i] = 1.0f;          // sustain
-} else if (new_on && !anyOn) {
-    chDecay[i] *= 0.95f;        // DAC/ENV-only: medium decay
+// 音量条：真实音量 + 快衰减
+float rawLv = v / 15.0f;
+if (v > 0) {
+    chDecay[i] = rawLv;
 } else {
-    chDecay[i] *= 0.85f;        // fast decay
+    chDecay[i] *= 0.85f;
+    if (chDecay[i] < 0.01f) chDecay[i] = 0.0f;
 }
+channelLevel[chIdx] = chDecay[i];
+
+// 钢琴键盘：纯真实音量，ENV 模式 vol=0 时满幅度
+float pianoLv = (v > 0) ? rawLv : (useEnv ? 1.0f : 0.0f);
 ```
 
-Level calculation：
+### UpdateNoiseChannelLevel
 
 ```cpp
-if (useEnv && !anyOn) {
-    lv = chDecay[i];            // ENV-only: full amplitude
-} else if (useEnv) {
-    lv = chDecay[i];
-} else {
-    lv = (v >= 15) ? 0.0f : (1.0f - (float)v / 15.0f) * chDecay[i];
-}
+// 直接取 noiseOn 通道最大音量，无衰减
+channelLevel[chIdx] = anyNoiseOn ? maxNVol : 0.0f;
 ```
 
-### ch0-2 下方文字显示
-
-```
-if (toneOn || noiseOn) && !(vol & 0x10):
-    显示 volume 数字 (0-15)
-if (vol & 0x10) && (toneOn || noiseOn):
-    显示 "ENV"
-if !(toneOn || noiseOn) && vol > 0:
-    显示 "DAC:vol"（音量条反映真实音量）
-```
-
-## 二、ch3 (Noise) 文字显示
-
-显示 3 个方波通道中 noiseOn=true 的通道的 volume 最大值：
+### UpdateEnvChannelLevel
 
 ```cpp
-uint8_t maxVol = 0;
-for (int j = 0; j < 3; j++) {
-    if (noiseOn[j]) {
-        uint8_t v = vol[j] & 0x0F;
-        if (v > maxVol) maxVol = v;
-    }
-}
-snprintf(volStr, sizeof(volStr), "%d", maxVol);
+// ENV 通道：借用最大音量，全部 vol=0 则满幅度
+envLv = (maxEVol > 0) ? maxEVol : 1.0f;
+channelLevel[chIdx] = envLv;
 ```
 
-## 三、ch4 (Env) 文字显示
-
-显示 3 个方波通道中 env mode (bit4=1) 的通道的 volume 最大值：
+### RenderLevelMeters 文字显示
 
 ```cpp
-uint8_t maxVol = 0;
-bool envOnlyMode = false;
-for (int j = 0; j < 3; j++) {
-    if (vol[j] & 0x10) {
-        uint8_t v = vol[j] & 0x0F;
-        if (v > maxVol) maxVol = v;
-        if (!toneOn[j] && !noiseOn[j]) envOnlyMode = true;
-    }
-}
-if (envOnlyMode)
-    snprintf(volStr, sizeof(volStr), "ENV");
-else
-    snprintf(volStr, sizeof(volStr), "%d", maxVol);
+// ch0-2: DAC 模式显示 "DAC:vol"，否则显示数字
+// ch3: noiseOn 通道最大音量数字
+// ch4: ENV 通道 vol 全为 0 则 "ENV"，否则最大音量数字
 ```
 
-当 envOnlyMode=true 时，ch0-2 对应通道的音量条按满幅度显示。
+## AY8910 音量寄存器说明
 
-## 四、钢琴键盘
+| bit4 | bits 0-3 | 含义 |
+|------|----------|------|
+| 0 | 0-15 | 固定音量模式，值 = 实际音量 |
+| 1 | 0-15 | 包络模式，bits 0-3 为包络选择，实际幅度由包络发生器控制 |
 
-- env mode + tone/noise 全关 → 根据 channelLevel 亮起，满幅度
-- DAC 模式 → 同理正常亮起
-
-## 验证
-
-1. 方波模式：tone on + vol > 0 → 音量条显示，文字显示 volume 数字
-2. 噪声模式：noise on + vol > 0 → ch0-2 音量条显示，ch3 显示对应最大 volume
-3. Env 模式：vol bit4=1 + tone/noise on → ch0-2 音量条显示，ch4 显示最大 volume
-4. DAC 模式：tone+noise off + vol > 0 → ch0-2 音量条显示真实音量，文字 "DAC:vol"
-5. ENV-only：tone+noise off + bit4=1 → ch0-2 满幅度，文字 "ENV"，ch4 显示 "ENV"
-6. 钢琴键盘在 env-only 和 DAC 模式下正常亮起
+ENV 模式下 bits 0-3 不是真实音量，而是包络形状选择。
+但对于 UI 可视化，ch0-2 仍然显示 vol & 0x0F 的值，因为这反映了寄存器写入的原始数据。
