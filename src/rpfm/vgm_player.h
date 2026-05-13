@@ -6,6 +6,7 @@
 
 #include "pico/stdlib.h"
 #include "hardware/timer.h"
+#include "hardware/irq.h"
 #include "command_buffer.h"
 #include "spfm_bus.pio.h"
 #include "protocol.h"
@@ -166,6 +167,8 @@ static void vgm_player_start(uint32_t loop_offset) {
         s_vgm_alarm_num = hardware_alarm_claim_unused(true);
         s_vgm_alarm_claimed = true;
         hardware_alarm_set_callback(s_vgm_alarm_num, vgm_timer_callback);
+        // Timer IRQ at highest priority — USB cannot preempt
+        irq_set_priority(TIMER_ALARM_IRQ_NUM(PICO_DEFAULT_TIMER_INSTANCE(), s_vgm_alarm_num), 0x00);
     }
 
     // Fire first alarm immediately to start processing
