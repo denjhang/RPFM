@@ -1,0 +1,7 @@
+/d/working/vscode-projects/YM2163-Midi/RPFM/build_scci/pioasm/CMakeFiles/pioasm.dir
+/d/working/vscode-projects/YM2163-Midi/RPFM/build_scci/pioasm/CMakeFiles/edit_cache.dir
+/d/working/vscode-projects/YM2163-Midi/RPFM/build_scci/pioasm/CMakeFiles/rebuild_cache.dir
+/d/working/vscode-projects/YM2163-Midi/RPFM/build_scci/pioasm/CMakeFiles/list_install_components.dir
+/d/working/vscode-projects/YM2163-Midi/RPFM/build_scci/pioasm/CMakeFiles/install.dir
+/d/working/vscode-projects/YM2163-Midi/RPFM/build_scci/pioasm/CMakeFiles/install/local.dir
+/d/working/vscode-projects/YM2163-Midi/RPFM/build_scci/pioasm/CMakeFiles/install/strip.dir

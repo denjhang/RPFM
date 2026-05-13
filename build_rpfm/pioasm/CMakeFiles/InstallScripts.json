@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"/d/working/vscode-projects/YM2163-Midi/RPFM/build_rpfm/pioasm/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

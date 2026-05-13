@@ -1,0 +1,13 @@
+# Target labels
+ pioasmBuild
+# Source files and their labels
+/d/working/vscode-projects/YM2163-Midi/RPFM/build_rpfm/pico-sdk/src/rp2_common/pico_status_led/CMakeFiles/pioasmBuild
+/d/working/vscode-projects/YM2163-Midi/RPFM/build_rpfm/pico-sdk/src/rp2_common/pico_status_led/CMakeFiles/pioasmBuild.rule
+/d/working/vscode-projects/YM2163-Midi/RPFM/build_rpfm/pico-sdk/src/rp2_common/pico_status_led/CMakeFiles/pioasmBuild-complete.rule
+/d/working/vscode-projects/YM2163-Midi/RPFM/build_rpfm/pico-sdk/src/rp2_common/pico_status_led/pioasm/src/pioasmBuild-stamp/pioasmBuild-build.rule
+/d/working/vscode-projects/YM2163-Midi/RPFM/build_rpfm/pico-sdk/src/rp2_common/pico_status_led/pioasm/src/pioasmBuild-stamp/pioasmBuild-configure.rule
+/d/working/vscode-projects/YM2163-Midi/RPFM/build_rpfm/pico-sdk/src/rp2_common/pico_status_led/pioasm/src/pioasmBuild-stamp/pioasmBuild-download.rule
+/d/working/vscode-projects/YM2163-Midi/RPFM/build_rpfm/pico-sdk/src/rp2_common/pico_status_led/pioasm/src/pioasmBuild-stamp/pioasmBuild-install.rule
+/d/working/vscode-projects/YM2163-Midi/RPFM/build_rpfm/pico-sdk/src/rp2_common/pico_status_led/pioasm/src/pioasmBuild-stamp/pioasmBuild-mkdir.rule
+/d/working/vscode-projects/YM2163-Midi/RPFM/build_rpfm/pico-sdk/src/rp2_common/pico_status_led/pioasm/src/pioasmBuild-stamp/pioasmBuild-patch.rule
+/d/working/vscode-projects/YM2163-Midi/RPFM/build_rpfm/pico-sdk/src/rp2_common/pico_status_led/pioasm/src/pioasmBuild-stamp/pioasmBuild-update.rule

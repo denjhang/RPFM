@@ -4,12 +4,12 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define RING_SIZE 16384  // 16KB
+#define RING_SIZE (256 * 1024)  // 256KB
 
 typedef struct {
     uint8_t buf[RING_SIZE];
-    volatile uint16_t head;  // write position (Core 0)
-    volatile uint16_t tail;  // read position (Core 1)
+    volatile uint32_t head;  // write position (Core 0)
+    volatile uint32_t tail;  // read position (Core 1)
 } ring_buf_t;
 
 static inline void ring_init(ring_buf_t *r) {
@@ -17,11 +17,11 @@ static inline void ring_init(ring_buf_t *r) {
     r->tail = 0;
 }
 
-static inline uint16_t ring_used(ring_buf_t *r) {
+static inline uint32_t ring_used(ring_buf_t *r) {
     return (r->head - r->tail) & (RING_SIZE - 1);
 }
 
-static inline uint16_t ring_free(ring_buf_t *r) {
+static inline uint32_t ring_free(ring_buf_t *r) {
     return (RING_SIZE - 1) - ring_used(r);
 }
 
