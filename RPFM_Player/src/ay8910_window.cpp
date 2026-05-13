@@ -174,7 +174,7 @@ static int s_vgmLoopCount = 0;
 static int s_vgmMaxLoops = 2;
 
 // Playback Mode: 0=Live (real-time register writes), 1=Buffered (stream raw VGM to firmware)
-static int s_playbackMode = 0;
+// s_playbackMode declared with s_ayDelayNs near line 190
 static uint16_t s_bufLevel = 0;
 static uint32_t s_bufTotal = 32768;
 static uint32_t s_streamSent = 0;
@@ -187,6 +187,8 @@ static int s_flushMode = 2;   // 1=Register-Level, 2=Command-Level (default)
 static int s_timerMode = 0;   // 0=H-Prec, 1=Hybrid, 2=MM-Timer, 3=VGMPlay, 7=OptVGMPlay
 static int s_writeProtocol = 0;  // 0=Original (spfm_write_reg), 1=Fixed (spfm_write_raw path B)
 static int s_flushThreshold = 4; // min wait samples to trigger mid-batch flush (1-735)
+static int s_ayDelayNs = 1000;  // AY8910 PIO write delay (ns, 0-2000)
+static int s_playbackMode = 0;  // 0=Live, 1=Buffered
 
 // Seek & Fadeout
 static int s_seekMode = 0;
@@ -834,6 +836,13 @@ static void LoadConfig(void) {
     if (s_flushThreshold < 1) s_flushThreshold = 1;
     if (s_flushThreshold > 735) s_flushThreshold = 735;
     VGMSync::SetFlushThreshold(s_flushThreshold);
+
+    // PIO delay & playback mode
+    s_ayDelayNs = GetPrivateProfileIntA("Settings", "AyPioDelay", 1000, s_configPath);
+    if (s_ayDelayNs < 0) s_ayDelayNs = 0;
+    if (s_ayDelayNs > 2000) s_ayDelayNs = 2000;
+    s_playbackMode = GetPrivateProfileIntA("Settings", "PlaybackMode", 0, s_configPath);
+    if (s_playbackMode < 0 || s_playbackMode > 1) s_playbackMode = 0;
     {
         char val[32] = "";
         GetPrivateProfileStringA("Settings", "FadeoutDuration", "3.0", val, sizeof(val), s_configPath);
@@ -884,6 +893,8 @@ static void SaveConfig(void) {
     WritePrivateProfileStringA("Settings", "TimerMode", std::to_string(s_timerMode).c_str(), s_configPath);
     WritePrivateProfileStringA("Settings", "WriteProtocol", std::to_string(s_writeProtocol).c_str(), s_configPath);
     WritePrivateProfileStringA("Settings", "FlushThreshold", std::to_string(s_flushThreshold).c_str(), s_configPath);
+    WritePrivateProfileStringA("Settings", "AyPioDelay", std::to_string(s_ayDelayNs).c_str(), s_configPath);
+    WritePrivateProfileStringA("Settings", "PlaybackMode", std::to_string(s_playbackMode).c_str(), s_configPath);
     {
         char val[32];
         snprintf(val, sizeof(val), "%.1f", s_fadeoutDuration);
@@ -2689,9 +2700,9 @@ static void RenderSidebar(void) {
     if (ImGui::IsItemHovered()) ImGui::SetTooltip(
         "Live: real-time register writes from PC\n"
         "Buffered: stream raw VGM to firmware timer");
-    ImGui::RadioButton("Live##aymode", &s_playbackMode, 0);
+    if (ImGui::RadioButton("Live##aymode", &s_playbackMode, 0)) SaveConfig();
     ImGui::SameLine();
-    ImGui::RadioButton("Buffered##aymode", &s_playbackMode, 1);
+    if (ImGui::RadioButton("Buffered##aymode", &s_playbackMode, 1)) SaveConfig();
 
     // Buffer status in buffered mode
     if (s_playbackMode == 1 && s_vgmPlaying) {
@@ -2707,7 +2718,6 @@ static void RenderSidebar(void) {
     ImGui::Spacing(); ImGui::Separator();
 
     // PIO Write Delay
-    static int s_ayDelayNs = 1000;
     ImGui::TextDisabled("PIO Write Delay: %d ns", s_ayDelayNs);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip(
         "AY8910 /WR pulse width in nanoseconds.\n"
@@ -2717,6 +2727,7 @@ static void RenderSidebar(void) {
         if (SPFMManager::IsConnected()) {
             rpfm_set_ay_delay((uint8_t)((s_ayDelayNs + 50) / 100));
         }
+        SaveConfig();
     }
 
     ImGui::Spacing(); ImGui::Separator();

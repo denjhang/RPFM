@@ -253,8 +253,10 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
         break;
     }
     case CMD_SET_DELAY: {
-        if (len >= 1 && payload[0] <= 200)
+        if (len >= 1 && payload[0] <= 200) {
             s_ay_delay_100ns = payload[0];
+            ay8910_set_clkdiv(s_bus_pio, s_ay_sm);
+        }
         break;
     }
     case CMD_NOP:
