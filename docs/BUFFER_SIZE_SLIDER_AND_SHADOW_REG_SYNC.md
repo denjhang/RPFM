@@ -23,30 +23,42 @@
 
 ## 二、缓冲模式可视化同步
 
-### 方案：即时 apply（不用 tick 延迟队列）
+### 方案：独立可视化线程
 
-缓冲模式下 `vgm_parse_byte` 解析到 AY8910 寄存器写入时直接调用 `UpdateAY8910State` / `UpdateAY8910State2`，不走 tick-based shadow queue。
+缓冲模式下启动独立 `VGMVisualizationThread`，自己打开 VGM 文件本地副本，按 44100Hz 真实速度独立解析 VGM，只调用 `UpdateAY8910State` / `UpdateAY8910State2` 更新影子寄存器，不发 HID 写入。
 
-**为什么不用 tick 同步**：
+**演进历程**：
 
-原方案用 `flushTo(fwTick)` 只 apply 固件已播放到的位置。但 fwTick 是固件 Core 1
-实际播放位置，缓冲越大 fwTick 滞后越严重（8KB ≈ 180ms 延迟），导致可视化卡顿。
+1. **v0：tick 延迟队列** — `flushTo(fwTick)` 只 apply 固件已播放到的位置。缓冲越大 fwTick 滞后越严重（8KB ≈ 180ms），可视化卡顿。
+2. **v1：即时 apply** — 流线程推送 VGM 字节到环形队列，可视化线程消费队列解析。但队列数据来源于 HID 发送节奏（~1ms/帧），数据量小的 VGM 更新一卡一卡。
+3. **v2（当前）：独立本地播放** — 可视化线程完全独立，自己读 VGM 文件按真实速度推进，和 live 模式同架构，不受 USB HID I/O 影响。
 
 **为什么不改固件加回调**：
 
 Core 1 是 44100Hz sample-accurate tight loop，任何中断/回调都会破坏时序精度。
-固件 Core 1 不能被打断。
 
-**当前方案**：
+**当前架构**：
 
 ```
-上位机解析 VGM → vgm_parse_byte → UpdateAY8910State (即时 apply)
-                                    ↓
-                         UI 读取影子寄存器 → 即时可视化
+VGMStreamThread (BELOW_NORMAL)          VGMVisualizationThread
+    ↓ HID: VGM_DATA → 固件               ↓ 本地 VGM 文件副本
+    ↓ s_fwTick (进度条)                   ↓ QPC + 1ms multimedia timer
+    ↓                                      ↓ VizProcessCommand() → UpdateAY8910State()
+    ↓                                      ↓ atomic_thread_fence(release)
+    ↓                                      ↓
+    ↓              GUI thread ←────────────┘
+    ↓              UpdateChannelLevels()
+    ↓              atomic_thread_fence(acquire)
+    ↓              渲染
 ```
 
-进度条仍用固件返回的 `s_vgm_tick`（真实播放位置），可视化跟数据发送同步。
-可视化比声音超前一个缓冲区延迟（512B ≈ 10ms，用户无感）。
+**跨线程内存可见性问题**：
+
+Release 编译下编译器可能将影子寄存器的读取缓存到寄存器中，GUI 线程看不到可视化线程的写入，导致可视化不更新。解决方案：
+- 可视化线程：写入影子寄存器后执行 `std::atomic_thread_fence(memory_order_release)`
+- GUI 线程：读取影子寄存器前执行 `std::atomic_thread_fence(memory_order_acquire)`
+
+**进度条**：仍用固件返回的 `s_fwTick`（真实播放位置），不受可视化线程影响。
 
 ### 固件改动（tick 用于进度条）
 
@@ -80,12 +92,12 @@ Time: 0.3s / 2.0s
 | `src/rpfm/main.c` | HID 响应帧 bytes[4-7] 写入 tick |
 | `RPFM_Player/src/rpfm_hid.h` | `rpfm_resp_t` 加 `tick` 字段 |
 | `RPFM_Player/src/rpfm_hid.cpp` | 解析 HID 响应 byte[4-7] 为 tick + 写入重试 |
-| `RPFM_Player/src/ay8910_window.cpp` | 缓冲区滑块 + 即时可视化 + 多媒体定时器 + 失败恢复 |
+| `RPFM_Player/src/ay8910_window.cpp` | 缓冲区滑块 + 独立可视化线程 + 内存屏障 + 多媒体定时器 + 失败恢复 |
 
 ## 验证
 
 1. 缓冲区滑块：512B-8KB 范围，调整后播放正常
-2. 可视化：缓冲模式下钢琴键盘、电平表即时响应，不受缓冲大小影响
+2. 可视化：缓冲模式下钢琴键盘、电平表响应速度与 live 模式一致，不受缓冲大小影响
 3. Tick 显示：侧边栏显示固件真实播放 tick
 4. 稳定性：CPU 高负载时播放不中断
 5. 切换回实时模式不受影响

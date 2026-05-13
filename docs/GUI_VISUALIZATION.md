@@ -3,21 +3,47 @@
 ## 概述
 
 RPFM Player 的 AY8910 可视化系统包含三个核心组件：电平表、钢琴键盘、寄存器表。
-所有可视化的数据源是影子寄存器（shadow registers），通过 tick 同步机制与固件播放位置精确对齐。
+所有可视化的数据源是影子寄存器（shadow registers），两种播放模式各有独立的数据通路。
 
-## 数据流
+## 播放模式与数据流
+
+### Live 模式
+
+VGMPlaybackThread 按 44100Hz 真实速度解析 VGM，每次 0xA0 命令同时发 HID 写入 + 更新影子寄存器。GUI 线程每帧读影子寄存器渲染。
 
 ```
-VGM 文件解析 → {reg, data, tick} 入队 (ShadowRegDelayQueue)
-                       ↓
-固件 HID 响应 → fwTick (44100 Hz sample position)
-                       ↓
-flushTo(fwTick) → apply 影子寄存器 → s_vol[], s_toneOn[], s_noiseOn[] 等
-                       ↓
+VGMPlaybackThread (NORMAL priority)
+    ↓ VGMProcessCommand() per 1ms timer tick
+    ↓ 0xA0 → UpdateAY8910State() + ay8910_write_reg() + safe_flush()
+    ↓ 影子寄存器即时更新
+    ↓
 UpdateChannelLevels() → channelLevel[], pianoKeyOn[]
-                       ↓
-RenderLevelMeters() / RenderPianoKeyboard() → ImGui 绘制
+    ↓
+RenderLevelMeters() / RenderPianoKeyboard()
 ```
+
+### 缓冲模式（独立可视化线程）
+
+**架构**：可视化线程完全独立于流线程，自己打开 VGM 文件本地副本，按 44100Hz 速度独立解析，只更新影子寄存器不发 HID。流线程只负责向固件发送数据。GUI 线程每帧读影子寄存器渲染。
+
+```
+VGMStreamThread (BELOW_NORMAL)          VGMVisualizationThread (NORMAL)
+    ↓ HID 发送 VGM 数据                    ↓ QPC + 1ms multimedia timer
+    ↓ s_fwTick 更新 (进度条用)              ↓ VizProcessCommand() 解析 VGM
+    ↓                                      ↓ 只调 UpdateAY8910State()，不发 HID
+    ↓                                      ↓ atomic_thread_fence(release)
+    ↓                                      ↓
+    ↓              GUI thread ←────────────┘
+    ↓              UpdateChannelLevels()
+    ↓              atomic_thread_fence(acquire)
+    ↓              RenderLevelMeters() / RenderPianoKeyboard()
+```
+
+**为什么需要独立线程**：缓冲模式下数据通过 HID 发给固件，上位机只有固件回报的 tick（受 USB 延迟影响）。如果可视化依赖 HID 数据流，更新频率会被 USB 帧率限制（~1ms/帧），导致 GUI 更新一卡一卡。独立线程让可视化以纯 CPU 速度运行，不受 I/O 影响。
+
+**跨线程内存可见性**：Release 编译下编译器/CPU 可能将影子寄存器的读取缓存到寄存器中，导致 GUI 线程看不到可视化线程的写入。通过 `std::atomic_thread_fence` 确保：
+- 可视化线程：写入影子寄存器后执行 `memory_order_release`
+- GUI 线程：读取影子寄存器前执行 `memory_order_acquire`
 
 ## 一、电平表 (Level Meters)
 
@@ -120,25 +146,12 @@ midi_note = round(69 + 12 * log2(freq / 440.0))
 
 双芯片模式显示两组寄存器。
 
-## 四、Tick 同步机制
-
-影子寄存器更新通过 tick-based 延迟队列同步，确保可视化与固件播放位置对齐。
-
-详见 [BUFFER_SIZE_SLIDER_AND_SHADOW_REG_SYNC.md](BUFFER_SIZE_SLIDER_AND_SHADOW_REG_SYNC.md)。
-
-核心流程：
-1. VGM 解析器解析每个命令时记录当前 tick
-2. 寄存器写入 {reg, data, tick} 入队
-3. 每帧从固件 HID 响应获取 fwTick
-4. flushTo(fwTick)：只 apply tick ≤ fwTick 的更新
-5. 可视化读取更新后的影子寄存器
-
-## 五、侧边栏配置
+## 四、侧边栏配置
 
 | 设置 | 说明 |
 |------|------|
 | PIO Delay | AY8910 /WR 脉冲宽度 (0-2000ns) |
-| Buffer Size | VGM 缓冲区 (64B - 2KB) |
+| Buffer Size | VGM 缓冲区 (512B - 8KB) |
 | Playback Mode | Live / Buffered |
 | Clock Correction | AY8910 时钟微调 |
 | Tick Display | 固件 tick / 总 tick + 时间 |
@@ -147,15 +160,15 @@ midi_note = round(69 + 12 * log2(freq / 440.0))
 
 所有设置持久化到 `ay8910_config.ini`。
 
-## 六、示波器 (Scope)
+## 五、示波器 (Scope)
 
 可配置高度的波形显示区域，每个通道独立波形。
 数据源：基于通道 tone period 模拟的方波/噪声波形。
 
-## 七、双芯片支持
+## 六、双芯片支持
 
 AY8910 支持双芯片模式（CS0 + CS1），所有可视化组件自动扩展到 10 通道：
 - ch0-4: 芯片 0 (A, B, C, Noise, Env)
 - ch5-9: 芯片 1 (A, B, C, Noise, Env)
 
-两组独立的影子寄存器，独立的 tick 同步。
+两组独立的影子寄存器，独立的可视化线程读取。

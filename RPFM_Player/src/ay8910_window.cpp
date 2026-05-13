@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <atomic>
 #include <string>
 #include <math.h>
 #include <commdlg.h>
@@ -117,6 +118,11 @@ static UINT32 s_vgmTotalSamples = 0;
 static UINT32 s_vgmCurrentSamples = 0;
 static uint32_t s_fwTick = 0;  // firmware's current playback tick (from HID response)
 static UINT32 s_vgmDataOffset = 0;
+
+// Visualization thread: independent local VGM playback for responsive shadow register updates
+static HANDLE s_vizThread = nullptr;
+static volatile bool s_vizRunning = false;
+
 static UINT32 s_vgmLoopOffset = 0;
 static UINT32 s_vgmLoopSamples = 0;
 
@@ -172,6 +178,7 @@ static std::vector<UINT8> InflateGzip(const UINT8* data, size_t size) {
     return out;
 }
 static int s_vgmLoopCount = 0;
+static int s_vizLoopCount = 0;
 static int s_vgmMaxLoops = 2;
 
 // Playback Mode: 0=Live (real-time register writes), 1=Buffered (stream raw VGM to firmware)
@@ -1233,6 +1240,9 @@ static void UpdateEnvChannelLevel(
 }
 
 static void UpdateChannelLevels(void) {
+    // Memory barrier: ensure GUI thread sees shadow register updates from viz thread
+    std::atomic_thread_fence(std::memory_order_acquire);
+
     // Clear all piano keys first
     for (int i = 0; i < AY_PIANO_KEYS; i++) {
         s_pianoKeyOn[i] = false;
@@ -1602,6 +1612,105 @@ static int VGMProcessBatch(int* outWait) {
     return count;
 }
 
+// Local VGM reader for visualization thread (avoids touching shared s_vgmFile/s_memPos)
+struct VizVGMReader {
+    std::vector<UINT8> data;
+    size_t pos = 0;
+    bool eof = false;
+
+    bool open(const char* path, UINT32 dataOffset) {
+        if (!s_memData.empty()) {
+            data = s_memData;
+        } else {
+            FILE* f = ym_fopen(path, "rb");
+            if (!f) return false;
+            fseek(f, 0, SEEK_END);
+            long fsize = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            data.resize(fsize);
+            if ((long)fread(data.data(), 1, fsize, f) != fsize) { fclose(f); return false; }
+            fclose(f);
+        }
+        pos = dataOffset;
+        eof = false;
+        return true;
+    }
+
+    int readByte() {
+        if (pos >= data.size()) { eof = true; return -1; }
+        return data[pos++];
+    }
+
+    void seek(size_t p) { pos = p; }
+};
+
+// Process one VGM command from local reader - updates shadow registers only, no HID
+static int VizProcessCommand(VizVGMReader& r) {
+    int cmd = r.readByte();
+    if (cmd < 0) return -1;
+
+    switch (cmd) {
+        case 0xA0: {
+            int reg_raw = r.readByte(); if (reg_raw < 0) return -1;
+            int data = r.readByte();    if (data < 0) return -1;
+            uint8_t chipID = (reg_raw & 0x80) >> 7;
+            uint8_t reg = reg_raw & 0x7F;
+            if (chipID == 0) UpdateAY8910State(reg, (UINT8)data);
+            else UpdateAY8910State2(reg, (UINT8)data);
+            return 0;
+        }
+        case 0x61: {
+            int lo = r.readByte(); if (lo < 0) return -1;
+            int hi = r.readByte(); if (hi < 0) return -1;
+            return lo | (hi << 8);
+        }
+        case 0x62: return 735;
+        case 0x63: return 882;
+        case 0x70: case 0x71: case 0x72: case 0x73:
+        case 0x74: case 0x75: case 0x76: case 0x77:
+        case 0x78: case 0x79: case 0x7A: case 0x7B:
+        case 0x7C: case 0x7D: case 0x7E: case 0x7F:
+            return (cmd & 0x0F) + 1;
+        case 0x66: {
+            if (s_vgmLoopOffset > 0 && (s_vgmMaxLoops == 0 || s_vizLoopCount < s_vgmMaxLoops)) {
+                if (s_vgmMaxLoops > 0 && s_vizLoopCount >= s_vgmMaxLoops - 1
+                    && s_fadeoutDuration > 0 && !s_fadeoutActive) {
+                    s_fadeoutActive = true;
+                    s_fadeoutLevel = 1.0f;
+                    s_fadeoutStartSample = s_vgmCurrentSamples;
+                    UINT32 fadeoutSamples = (UINT32)(s_fadeoutDuration * 44100.0);
+                    if (s_vgmLoopSamples > 0 && fadeoutSamples > s_vgmLoopSamples)
+                        fadeoutSamples = s_vgmLoopSamples;
+                    s_fadeoutEndSample = s_vgmCurrentSamples + fadeoutSamples;
+                }
+                r.seek(s_vgmLoopOffset);
+                s_vizLoopCount++;
+                return 0;
+            }
+            return -1;
+        }
+        case 0x67: {
+            int compat = r.readByte(); if (compat < 0) return -1;
+            if (compat != 0x66) return -1;
+            int type = r.readByte();   if (type < 0) return -1;
+            int b0 = r.readByte(); if (b0 < 0) return -1;
+            int b1 = r.readByte(); if (b1 < 0) return -1;
+            int b2 = r.readByte(); if (b2 < 0) return -1;
+            int b3 = r.readByte(); if (b3 < 0) return -1;
+            UINT32 size = (UINT32)b0 | ((UINT32)b1 << 8) | ((UINT32)b2 << 16) | ((UINT32)b3 << 24);
+            r.pos += size;
+            return 0;
+        }
+        default: {
+            UINT8 len = VGM_CMD_LEN[cmd];
+            if (len <= 1) return 0;
+            r.pos += len - 1;
+            return 0;
+        }
+    }
+}
+
+
 // Fadeout helper: shared logic for volume ramp
 static bool DoFadeoutUpdate(void) {
     if (!s_fadeoutActive || s_fadeoutDuration <= 0) return false;
@@ -1684,62 +1793,77 @@ struct ShadowRegDelayQueue {
 static ShadowRegDelayQueue s_shadowQueue;
 
 // VGM parse state machine for shadow register sync in buffered mode
-struct VgmParseState {
-    bool in_cmd = false;
-    uint8_t cmd = 0;
-    uint8_t bytes_remaining = 0;
-    uint8_t cmd_buf[4];
-    int buf_pos = 0;
-    uint32_t currentTick = 0;  // running VGM sample position
-};
+// Visualization thread: independent local VGM playback at real speed (44100Hz)
+// Same architecture as live-mode VGMPlaybackThread, but only updates shadow registers
+static DWORD WINAPI VGMVisualizationThread(LPVOID) {
+    DcLog("[Viz] Thread started, dataOffset=%u\n", s_vgmDataOffset);
 
-static void vgm_parse_byte(VgmParseState& s, uint8_t byte) {
-    if (!s.in_cmd) {
-        s.cmd = byte;
-        s.buf_pos = 0;
-        if (byte == 0xA0) {
-            s.bytes_remaining = 2;
-            s.in_cmd = true;
-        } else if (byte >= 0x70 && byte <= 0x7F) {
-            s.currentTick += (byte & 0x0F) + 1;
-        } else if (byte == 0x61) {
-            s.bytes_remaining = 2;
-            s.in_cmd = true;
-        } else if (byte == 0x62) {
-            s.currentTick += 735;  // NTSC frame
-        } else if (byte == 0x63) {
-            s.currentTick += 882;  // PAL frame
-        } else if (byte == 0x66) {
-            // end/loop
-        } else {
-            UINT8 len = VGM_CMD_LEN[byte];
-            if (len > 1) {
-                s.bytes_remaining = len - 1;
-                s.in_cmd = true;
+    VizVGMReader reader;
+    if (!reader.open(s_vgmPath, s_vgmDataOffset)) { DcLog("[Viz] Failed to open VGM\n"); return 1; }
+
+    LARGE_INTEGER perfFreq;
+    QueryPerformanceFrequency(&perfFreq);
+    double samplesPerTick = 44100.0 / perfFreq.QuadPart;
+
+    HANDLE mmEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
+    MMRESULT mmTimer = timeSetEvent(1, 1, (LPTIMECALLBACK)mmEvent, 0,
+                                     TIME_PERIODIC | TIME_CALLBACK_EVENT_SET);
+    if (!mmTimer) { CloseHandle(mmEvent); return 1; }
+
+    LARGE_INTEGER last;
+    QueryPerformanceCounter(&last);
+    double samplesToProcess = 0.0;
+
+    while (s_vizRunning && s_vgmPlaying) {
+        if (s_vgmPaused) { Sleep(10); QueryPerformanceCounter(&last); continue; }
+        WaitForSingleObject(mmEvent, INFINITE);
+
+        LARGE_INTEGER now;
+        QueryPerformanceCounter(&now);
+        samplesToProcess += (now.QuadPart - last.QuadPart) * samplesPerTick;
+        last = now;
+
+        int run = (int)samplesToProcess;
+
+        if (run > 0) {
+            int processed = 0;
+            while (processed < run && s_vizRunning && s_vgmPlaying && !s_vgmPaused) {
+                int w = VizProcessCommand(reader);
+                if (w < 0) {
+                    // EOF — don't stop playback, let stream thread decide
+                    break;
+                }
+                if (w > 0) processed += w;
             }
-        }
-    } else {
-        s.cmd_buf[s.buf_pos++] = byte;
-        s.bytes_remaining--;
-        if (s.bytes_remaining == 0) {
-            if (s.cmd == 0xA0) {
-                uint8_t reg_raw = s.cmd_buf[0];
-                uint8_t data = s.cmd_buf[1];
-                uint8_t chipID = (reg_raw & 0x80) >> 7;
-                uint8_t reg = reg_raw & 0x7F;
-                // Buffered mode: apply immediately for responsive visualization
-                if (chipID == 0) UpdateAY8910State(reg, data);
-                else UpdateAY8910State2(reg, data);
-            } else if (s.cmd == 0x61) {
-                s.currentTick += s.cmd_buf[0] | ((uint32_t)s.cmd_buf[1] << 8);
+            samplesToProcess -= processed;
+            s_vgmCurrentSamples += processed;
+            std::atomic_thread_fence(std::memory_order_release);
+
+            if (s_fadeoutActive && s_fadeoutDuration > 0) {
+                UINT32 fadeRange = s_fadeoutEndSample - s_fadeoutStartSample;
+                if (fadeRange == 0) fadeRange = 1;
+                float progress = (float)(s_vgmCurrentSamples - s_fadeoutStartSample) / (float)fadeRange;
+                if (s_vgmCurrentSamples >= s_fadeoutEndSample) {
+                    s_fadeoutLevel = 0.0f;
+                    s_fadeoutActive = false;
+                } else {
+                    s_fadeoutLevel = 1.0f - progress;
+                }
+                if (s_fadeoutLevel <= 0.0f) break;
             }
-            s.in_cmd = false;
         }
     }
+
+    timeKillEvent(mmTimer);
+    CloseHandle(mmEvent);
+    return 0;
 }
 
 // Buffered mode: stream raw VGM bytes to firmware via CMD_VGM_DATA
 static DWORD WINAPI VGMStreamThread(LPVOID) {
+    // Lower thread priority so GUI main thread gets priority for rendering
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+
     // 1ms multimedia timer for precise polling (replaces Sleep(1) which drifts under load)
     HANDLE mmEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
     MMRESULT mmTimer = timeSetEvent(1, 1, (LPTIMECALLBACK)mmEvent, 0,
@@ -1781,7 +1905,6 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
     s_streamSent = 0;
     s_streamTotal = localTotal;
 
-    VgmParseState parseState;
     uint32_t bufTargetBytes = kBufSizes[s_bufTargetKB];
     if (bufTargetBytes > s_bufTotal) bufTargetBytes = s_bufTotal;
 
@@ -1805,9 +1928,6 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
             continue;
         }
         prefillFails = 0;
-        // Parse VGM commands — tick-based, no delay yet (firmware not playing)
-        for (size_t i = 0; i < toSend; i++)
-            vgm_parse_byte(parseState, localData[localPos + i]);
         s_bufLevel = newBufLevel;
         localPos += toSend;
         s_streamSent += (uint32_t)toSend;
@@ -1836,10 +1956,16 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
 
         // Backpressure: wait if firmware buffer is >50% of target
         if (s_bufLevel > bufTargetBytes / 2) {
-            uint8_t dummy = 0;
-            uint16_t newLevel = 0;
-            if (rpfm_send_vgm_data(&dummy, 0, &newLevel, &fwTick))
-                s_bufLevel = newLevel;
+            // Only poll HID every ~10ms to avoid starving GUI thread
+            static int backpressureCount = 0;
+            backpressureCount++;
+            if (backpressureCount >= 10) {
+                backpressureCount = 0;
+                uint8_t dummy = 0;
+                uint16_t newLevel = 0;
+                if (rpfm_send_vgm_data(&dummy, 0, &newLevel, &fwTick))
+                    s_bufLevel = newLevel;
+            }
             WaitForSingleObject(mmEvent, INFINITE);
             continue;
         }
@@ -1864,15 +1990,11 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
                     continue;
                 }
                 streamFails = 0;
-                // Parse VGM commands into tick-based shadow queue
-                for (size_t i = 0; i < toSend; i++)
-                    vgm_parse_byte(parseState, localData[localPos + i]);
                 s_bufLevel = newBufLevel;
                 localPos += toSend;
                 s_streamSent += (uint32_t)toSend;
 
-                // Use firmware tick for accurate position tracking
-                s_vgmCurrentSamples = fwTick;
+                // Use firmware tick for accurate position tracking (progress bar uses s_fwTick)
                 s_fwTick = fwTick;
             }
         }
@@ -1894,6 +2016,8 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
     }
 
     s_vgmStreamRunning = false;
+    s_vizRunning = false;
+    if (s_vizThread) { WaitForSingleObject(s_vizThread, 2000); CloseHandle(s_vizThread); s_vizThread = nullptr; }
     s_vgmPlaying = false;
     s_vgmTrackEnded = true;
     timeKillEvent(mmTimer);
@@ -2017,6 +2141,10 @@ static void StartVGMPlayback(void) {
         s_vgmStreamRunning = false;
         if (s_vgmStreamThread) { WaitForSingleObject(s_vgmStreamThread, 2000); CloseHandle(s_vgmStreamThread); s_vgmStreamThread = nullptr; }
     }
+    if (s_vizRunning) {
+        s_vizRunning = false;
+        if (s_vizThread) { WaitForSingleObject(s_vizThread, 2000); CloseHandle(s_vizThread); s_vizThread = nullptr; }
+    }
 
     s_vgmCurrentSamples = 0;
     s_vgmPlaying = true;
@@ -2025,7 +2153,11 @@ static void StartVGMPlayback(void) {
     s_vgmLoopCount = 0;
 
     if (s_playbackMode == 1) {
-        // Buffered mode: VGMStreamThread handles file loading and streaming
+        // Buffered mode: VGMStreamThread handles HID streaming, VizThread handles local visualization
+        s_vizLoopCount = 0;
+        s_vizRunning = true;
+        s_vizThread = CreateThread(NULL, 0, VGMVisualizationThread, NULL, 0, NULL);
+
         s_bufLevel = 0;
         s_streamSent = 0;
         s_streamTotal = 0;
