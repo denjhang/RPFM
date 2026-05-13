@@ -30,6 +30,7 @@
 #define CMD_VGM_SEEK    0x07  // [offset(4B LE)]
 #define CMD_QUERY       0x10
 #define CMD_BOOTSEL     0x20
+#define CMD_SET_DELAY   0x21  // [delay_us(1B)] — set AY8910 PIO write delay (0-20µs)
 #define CMD_NOP         0xFF
 
 // STATUS bits
