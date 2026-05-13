@@ -1,6 +1,6 @@
 # RPFM — RP2350A Sound Chip Player
 
-RPFM is a retro sound chip hardware player based on the RP2350A, succeeding the [SPFM (Serial Port FM)](https://github.com/gtlabJP/SPFM) series. It drives YM2413, AY8910, and other classic sound chips with PIO-precise timing for hardware-level VGM playback.
+RPFM (Raspberry Pi Pico FM) is a retro sound chip hardware player based on the RP2350A, succeeding the [SPFM (Serial Port FM)](https://github.com/gtlabJP/SPFM) series. It drives YM2413, AY8910, and other classic sound chips with PIO-precise timing for hardware-level VGM playback.
 
 ![RPFM Overview](pics/overview.png)
 

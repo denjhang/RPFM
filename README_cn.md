@@ -1,6 +1,6 @@
 # RPFM — RP2350A Sound Chip Player
 
-RPFM 是基于 RP2350A 的复古音源芯片硬件播放器，是 SPFM (Sound Player for Multiple chips) 系列的继任者。通过 PIO 精确时序驱动 YM2413、AY8910 等经典音源芯片，实现硬件级 VGM 播放。
+RPFM (Raspberry Pi Pico FM) 是基于 RP2350A 的复古音源芯片硬件播放器，是 SPFM (Serial Port FM) 系列的继任者。通过 PIO 精确时序驱动 YM2413、AY8910 等经典音源芯片，实现硬件级 VGM 播放。
 
 ![RPFM Overview](pics/overview.png)
 
