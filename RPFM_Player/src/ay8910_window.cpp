@@ -129,6 +129,7 @@ static UINT32 s_vgmLoopSamples = 0;
 // VGZ support: memory buffer for decompressed data
 static std::vector<UINT8> s_memData;
 static size_t s_memPos = 0;
+static volatile bool s_muteDirty = false;
 
 static size_t vgmfread(void* buf, size_t sz, size_t cnt, FILE* f) {
     if (!s_memData.empty()) {
@@ -1949,6 +1950,7 @@ static DWORD WINAPI VGMStreamThread(LPVOID param) {
         localPos = startPos;
         localTotal = (uint32_t)(localData.size() - startPos);
     } else {
+        // ...
         // Read entire file into local buffer
         FILE* f = ym_fopen(s_vgmPath, "rb");
         if (!f) { s_vgmStreamRunning = false; return 0; }
@@ -1974,11 +1976,66 @@ static DWORD WINAPI VGMStreamThread(LPVOID param) {
     s_streamSent = 0;
     s_streamTotal = localTotal;
 
+    // Backup original data for mute re-patch (unmute needs original bytes)
+    std::vector<UINT8> localDataOrig = localData;
+
+    // Mute patch helper: scan and modify VGM bytes in-place
+    auto patchMute = [](uint8_t* buf, size_t len) {
+        size_t p = 0;
+        while (p + 2 < len) {
+            if (buf[p] == 0xA0) {
+                uint8_t chipID = (buf[p + 1] & 0x80) >> 7;
+                uint8_t reg = buf[p + 1] & 0x7F;
+                int base = chipID * AY_CH_PER_CHIP;
+                if (reg >= 0x08 && reg <= 0x0A) {
+                    int ch = reg - 0x08;
+                    if (s_chMuted[base + ch]) {
+                        if (s_soloCh == base + 4 && (buf[p + 2] & 0x10)) { /* pass */ }
+                        else buf[p + 2] = 0;
+                    }
+                    if (s_chMuted[base + 4]) buf[p + 2] &= ~0x10;
+                }
+                if (reg == 0x07) {
+                    for (int ch = 0; ch < 3; ch++) {
+                        if (s_chMuted[base + ch]) {
+                            if (s_soloCh == base + 3 && !(buf[p + 2] & (1 << (ch + 3)))) { /* pass */ }
+                            else buf[p + 2] |= (0x09 << ch);
+                        }
+                    }
+                    if (s_chMuted[base + 3]) buf[p + 2] |= 0x38;
+                }
+                p += 3;
+            } else {
+                switch (buf[p]) {
+                    case 0x61: p += 3; break;
+                    case 0x66: p = len; break;
+                    case 0x67: {
+                        if (p + 6 < len) {
+                            uint32_t sz = buf[p+3] | (buf[p+4]<<8) | (buf[p+5]<<16) | (buf[p+6]<<24);
+                            p += 7 + sz;
+                        } else p = len;
+                        break;
+                    }
+                    default: {
+                        if (buf[p] >= 0x70 && buf[p] <= 0x7F) p += 1;
+                        else if (buf[p] == 0x62 || buf[p] == 0x63) p += 1;
+                        else if (buf[p] == 0x66 || buf[p] == 0x67) p = len;
+                        else p += 1;  // unknown cmd, skip 1 byte
+                        break;
+                    }
+                }
+            }
+        }
+    };
+
     uint32_t bufTargetBytes = kBufSizes[s_bufTargetKB];
     if (bufTargetBytes > s_bufTotal) bufTargetBytes = s_bufTotal;
 
     DcLog("[VGM-Stream] Total data: %u bytes, startPos=%u\n",
           localTotal, (unsigned)localPos);
+
+    // Initial patch: apply mute state to all data before prefill
+    patchMute(&localData[localPos], localTotal);
 
     // Phase 1: Pre-fill firmware buffer before starting timer
     uint32_t prefillAmount = (localTotal > bufTargetBytes / 4) ? bufTargetBytes / 4 : localTotal;
@@ -2019,8 +2076,22 @@ static DWORD WINAPI VGMStreamThread(LPVOID param) {
     uint32_t fwTick = 0;
     int streamFails = 0;
 
+    // Mute re-patch: when mute changes, re-scan from current position
+    volatile bool& muteDirty = s_muteDirty;
+
+    size_t dataStartPos = localPos;
+
     while (s_vgmStreamRunning && s_vgmPlaying) {
         if (s_vgmPaused) { Sleep(10); continue; }
+
+        // Re-patch remaining data if mute state changed
+        if (muteDirty) {
+            muteDirty = false;
+            size_t patchLen = localData.size() - localPos;
+            size_t copyLen = std::min(patchLen, localDataOrig.size() - localPos);
+            memcpy(&localData[localPos], &localDataOrig[localPos], copyLen);
+            patchMute(&localData[localPos], patchLen);
+        }
 
         // Backpressure: wait if firmware buffer is >50% of target
         if (s_bufLevel > bufTargetBytes / 2) {
@@ -2046,6 +2117,7 @@ static DWORD WINAPI VGMStreamThread(LPVOID param) {
             } else {
                 size_t toSend = (remain > 60) ? 60 : remain;
                 uint16_t newBufLevel = 0;
+                patchMute(&localData[localPos], toSend);
                 if (!rpfm_send_vgm_data(&localData[localPos], (uint8_t)toSend, &newBufLevel, &fwTick)) {
                     streamFails++;
                     if (streamFails >= 20) {
@@ -2746,6 +2818,8 @@ static void RenderPianoKeyboard(void) {
 }
 
 // ============ Level Meters ============
+
+
 static void ApplyChannelMute(int i) {
     int chip = i / AY_CH_PER_CHIP;
     int ch = i % AY_CH_PER_CHIP;
@@ -2777,6 +2851,8 @@ static void ApplyChannelMute(int i) {
             safe_flush();
         }
     }
+    // 缓冲模式：通知流线程重新 patch
+    if (s_playbackMode == 1 && s_vgmLoaded) s_muteDirty = true;
 }
 
 static void RenderLevelMeters(void) {
