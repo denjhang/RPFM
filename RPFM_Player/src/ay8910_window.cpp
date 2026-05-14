@@ -2831,9 +2831,10 @@ static void ApplyChannelMute(int i) {
 
     if (s_muteMode == 1 && s_connected) {
         uint8_t mask = 0;
-        for (int j = 0; j < AY_NUM_CHANNELS; j++)
-            if (s_chMuted[j]) mask |= (1 << (j % AY_CH_PER_CHIP));
-        rpfm_set_mute(mask, (int8_t)s_soloCh);
+        for (int j = 0; j < AY_CH_PER_CHIP; j++)
+            if (s_chMuted[j]) mask |= (1 << j);
+        int8_t solo = (s_soloCh >= 0 && s_soloCh < AY_CH_PER_CHIP) ? s_soloCh : -1;
+        rpfm_set_mute(mask, solo);
         return;
     }
 
