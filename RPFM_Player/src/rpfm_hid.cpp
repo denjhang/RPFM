@@ -160,3 +160,15 @@ bool rpfm_vgm_stop(void) {
     s_seq = (s_seq + 1) & 0xFF;
     return rpfm_hid_send_frame(CMD_VGM_STOP, s_seq, NULL, 0, NULL);
 }
+
+bool rpfm_vgm_pause(void) {
+	s_seq = (s_seq + 1) & 0xFF;
+	uint8_t payload[1] = {1};
+	return rpfm_hid_send_frame(CMD_VGM_PAUSE, s_seq, payload, 1, NULL);
+}
+
+bool rpfm_vgm_resume(void) {
+	s_seq = (s_seq + 1) & 0xFF;
+	uint8_t payload[1] = {0};
+	return rpfm_hid_send_frame(CMD_VGM_PAUSE, s_seq, payload, 1, NULL);
+}

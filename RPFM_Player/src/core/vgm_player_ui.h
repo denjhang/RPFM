@@ -24,10 +24,12 @@ struct VGMPlayerCallbacks {
     bool* sequentialPlayback;
     std::vector<std::string>* playlist;
     bool* showPlayerSettings;
+    bool* vgmLoopEnabled;
     void (*startPlayback)();
     void (*stopPlayback)();
     void (*pausePlayback)();
     void (*seekToStart)();
+    void (*seekToPosition)(uint32_t targetSample);
     void (*playNext)();
     void (*playPrev)();
     void (*openFileDialog)();

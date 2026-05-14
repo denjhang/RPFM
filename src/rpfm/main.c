@@ -248,6 +248,13 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
         cmd_buf_init(&s_cmd);
         break;
     }
+    case CMD_VGM_PAUSE: {
+        if (len >= 1) {
+            if (payload[0]) vgm_player_pause();
+            else vgm_player_resume();
+        }
+        break;
+    }
     case CMD_BOOTSEL: {
         reset_usb_boot(0, 0);
         break;

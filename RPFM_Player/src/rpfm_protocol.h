@@ -16,6 +16,7 @@
 #define CMD_VGM_DATA   0x04
 #define CMD_VGM_START  0x05
 #define CMD_VGM_STOP   0x06
+#define CMD_VGM_PAUSE  0x09
 #define CMD_BOOTSEL    0x20
 #define CMD_SET_DELAY  0x21
 #define CMD_NOP        0xFF

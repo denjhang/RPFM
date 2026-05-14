@@ -41,6 +41,7 @@ static volatile uint32_t s_vgm_loop_offset = 0;  // 0 = no loop
 static volatile int s_vgm_loop_count = 0;
 static volatile int s_vgm_max_loops = 2;
 static volatile bool s_vgm_started = false;
+static volatile bool s_vgm_paused = false;
 static volatile uint32_t s_vgm_tick = 0;  // current playback sample position (44100 Hz)
 
 // Forward declarations from main.c
@@ -66,9 +67,8 @@ static void core1_vgm_main(void) {
     uint64_t cycle_us = 0;
     uint64_t last_cc = 0;
     uint64_t next_sample = 0;
-    // 1 sample at 44100Hz = 1000000/44100 µs ≈ 22.676 µs
-    // Precompute: sample * 1000000 / 44100
-    // Instead, count in µs and compare: next_time_us = next_sample * 1000000 / 44100
+    // 1 sample at 44100Hz = 1000000/44100 us approx 22.676 us
+    // Instead, count in us and compare: next_time_us = next_sample * 1000000 / 44100
 
     while (true) {
         // Wait for start signal from Core 0
@@ -91,12 +91,18 @@ static void core1_vgm_main(void) {
             last_cc = timer_hw->timerawl;
         }
 
+        // Pause: freeze time, don't consume buffer
+        if (s_vgm_paused) {
+            last_cc = timer_hw->timerawl;
+            continue;
+        }
+
         // Accumulate elapsed microseconds
         uint64_t cc = timer_hw->timerawl;
         cycle_us += (cc - last_cc);
         last_cc = cc;
 
-        // Convert accumulated µs to sample number
+        // Convert accumulated us to sample number
         uint64_t sample = cycle_us * 44100ULL / 1000000ULL;
 
         if (sample < next_sample) {
@@ -186,12 +192,17 @@ static void vgm_player_init(cmd_buf_t *buf, PIO pio, uint sm) {
 static void vgm_player_start(uint32_t loop_offset) {
     s_vgm_loop_offset = loop_offset;
     s_vgm_loop_count = 0;
+    s_vgm_paused = false;
     s_vgm_started = false;
     s_status |= STATUS_PLAYING;
 }
 
 static void vgm_player_stop(void) {
     s_status &= ~STATUS_PLAYING;
+    s_vgm_paused = false;
 }
+
+static inline void vgm_player_pause(void)  { s_vgm_paused = true; }
+static inline void vgm_player_resume(void) { s_vgm_paused = false; }
 
 #endif

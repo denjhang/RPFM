@@ -261,6 +261,14 @@ void RenderPlayerBar(const VGMPlayerCallbacks& cb) {
                 if (maxL < 1) maxL = 1;
                 VGMSync::SetMaxLoops(maxL);
             }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Loop count (requires reload)");
+            ImGui::SameLine();
+            char loopChkId[64];
+            snprintf(loopChkId, sizeof(loopChkId), "%s_loopen", cb.idSuffix);
+            if (cb.vgmLoopEnabled) {
+                ImGui::Checkbox(loopChkId, cb.vgmLoopEnabled);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Enable loop (requires reload)");
+            }
             ImGui::SameLine();
             ImGui::TextDisabled("F:");
             ImGui::SameLine();
@@ -287,8 +295,7 @@ void RenderPlayerBar(const VGMPlayerCallbacks& cb) {
                     totalDurSec = (double)*cb.totalSamples / 44100.0;
                 }
                 uint32_t targetSample = (uint32_t)(seek_progress * totalDurSec * 44100.0);
-                VGMSync::SeekUnifiedPlayback(targetSample);
-                *cb.currentSamples = targetSample;
+                if (cb.seekToPosition) cb.seekToPosition(targetSample);
             } else {
                 seek_progress = progress;
             }

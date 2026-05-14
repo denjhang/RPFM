@@ -180,6 +180,8 @@ static std::vector<UINT8> InflateGzip(const UINT8* data, size_t size) {
 static int s_vgmLoopCount = 0;
 static int s_vizLoopCount = 0;
 static int s_vgmMaxLoops = 2;
+static bool s_vgmLoopEnabled = true;       // true=展开循环播放完整长度, false=播到0x66停止
+static volatile size_t s_vgmSeekPos = 0;   // seek后线程从该位置开始读取
 
 // Playback Mode: 0=Live (real-time register writes), 1=Buffered (stream raw VGM to firmware)
 // s_playbackMode declared with s_ayDelayNs near line 190
@@ -366,6 +368,8 @@ static void NavBack(void);
 static void NavForward(void);
 static void NavToParent(void);
 static void UpdateChannelLevels(void);
+static void SeekVGM(uint32_t targetSample);
+static void key_off_all(void);
 static void RenderPianoKeyboard(void);
 static void RenderLevelMeters(void);
 static void RenderScopeArea(void);
@@ -1395,8 +1399,31 @@ static bool LoadVGMFile(const char* path) {
         s_vgmFile = ym_fopen(path, "rb");
         if (!s_vgmFile) { DcLog("[VGM] Reopen failed\n"); return false; }
     } else {
-        // VGZ: data already in memory, reset position for playback
+        // VGZ or expanded data: already in memory, reset position for playback
         s_memPos = 0;
+    }
+
+    // Loop expansion: duplicate loop section N-1 times in memory
+    // VGM: [intro][loop], expanded: [intro][loop]×maxLoops
+    // totalExpanded = (totalSamples - loopSamples) + loopSamples × maxLoops
+    if (s_vgmLoopEnabled && s_vgmLoopSamples > 0 && s_vgmLoopOffset > 0 && s_vgmMaxLoops > 1
+        && s_vgmLoopOffset < s_memData.size()) {
+        size_t loopDataLen = s_memData.size() - s_vgmLoopOffset;
+        size_t origSize = s_memData.size();
+        size_t extraBytes = loopDataLen * (s_vgmMaxLoops - 1);
+        s_memData.resize(origSize + extraBytes);
+        for (int i = 1; i < s_vgmMaxLoops; i++) {
+            memcpy(&s_memData[origSize + loopDataLen * (i - 1)],
+                   &s_memData[s_vgmLoopOffset], loopDataLen);
+        }
+        s_vgmTotalSamples = (s_vgmTotalSamples - s_vgmLoopSamples)
+                           + s_vgmLoopSamples * s_vgmMaxLoops;
+        s_vgmLoopOffset = 0;  // expanded, no firmware loop
+        DcLog("[VGM] Loop expanded: %d loops, %u -> %u samples (%.1fs)\n",
+              s_vgmMaxLoops, (unsigned)origSize, (unsigned)s_memData.size(),
+              (double)s_vgmTotalSamples / 44100.0);
+    } else if (!s_vgmLoopEnabled) {
+        s_vgmLoopOffset = 0;  // no loop
     }
 
     snprintf(s_vgmPath, MAX_PATH, "%s", path);
@@ -1796,10 +1823,12 @@ static ShadowRegDelayQueue s_shadowQueue;
 // Visualization thread: independent local VGM playback at real speed (44100Hz)
 // Same architecture as live-mode VGMPlaybackThread, but only updates shadow registers
 static DWORD WINAPI VGMVisualizationThread(LPVOID) {
-    DcLog("[Viz] Thread started, dataOffset=%u\n", s_vgmDataOffset);
+    DcLog("[Viz] Thread started, dataOffset=%u seekPos=%u\n", s_vgmDataOffset, (unsigned)s_vgmSeekPos);
 
     VizVGMReader reader;
-    if (!reader.open(s_vgmPath, s_vgmDataOffset)) { DcLog("[Viz] Failed to open VGM\n"); return 1; }
+    size_t startPos = s_vgmSeekPos > 0 ? s_vgmSeekPos : s_vgmDataOffset;
+    if (!reader.open(s_vgmPath, startPos)) { DcLog("[Viz] Failed to open VGM\n"); return 1; }
+    std::atomic_thread_fence(std::memory_order_acquire);
 
     LARGE_INTEGER perfFreq;
     QueryPerformanceFrequency(&perfFreq);
@@ -1878,8 +1907,9 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
     if (!s_memData.empty()) {
         // Copy from already-decompressed memory
         localData = s_memData;
-        localPos = s_vgmDataOffset;
-        localTotal = (uint32_t)(localData.size() - s_vgmDataOffset);
+        size_t startPos = s_vgmSeekPos > 0 ? s_vgmSeekPos : s_vgmDataOffset;
+        localPos = startPos;
+        localTotal = (uint32_t)(localData.size() - startPos);
     } else {
         // Read entire file into local buffer
         FILE* f = ym_fopen(s_vgmPath, "rb");
@@ -1892,8 +1922,9 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
             fclose(f); s_vgmStreamRunning = false; return 0;
         }
         fclose(f);
-        localPos = s_vgmDataOffset;
-        localTotal = (uint32_t)(localData.size() - s_vgmDataOffset);
+        size_t startPos = s_vgmSeekPos > 0 ? s_vgmSeekPos : s_vgmDataOffset;
+        localPos = startPos;
+        localTotal = (uint32_t)(localData.size() - startPos);
     }
 
     if (localTotal == 0) {
@@ -1935,10 +1966,8 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
 
     DcLog("[VGM-Stream] Prefilled %u bytes, starting playback\n", s_streamSent);
 
-    // Now send VGM_START — timer ISR begins consuming from pre-filled buffer
+    // Now send VGM_START — loops are expanded by host, so loopOff=0
     uint16_t loopOff = 0;
-    if (s_vgmLoopOffset > 0 && s_vgmLoopOffset >= s_vgmDataOffset)
-        loopOff = (uint16_t)(s_vgmLoopOffset - s_vgmDataOffset);
 
     if (!rpfm_vgm_start(loopOff, NULL)) {
         DcLog("[VGM-Stream] VGM start failed\n");
@@ -2151,6 +2180,7 @@ static void StartVGMPlayback(void) {
     s_vgmPaused = false;
     s_vgmTrackEnded = false;
     s_vgmLoopCount = 0;
+    s_vgmSeekPos = 0;
 
     if (s_playbackMode == 1) {
         // Buffered mode: VGMStreamThread handles HID streaming, VizThread handles local visualization
@@ -2201,7 +2231,18 @@ static void StopVGMPlayback(void) {
 }
 
 static void PauseVGMPlayback(void) {
+    if (!s_vgmLoaded || !s_vgmPlaying) return;
     s_vgmPaused = !s_vgmPaused;
+
+    if (s_connected && s_playbackMode == 1) {
+        if (s_vgmPaused) {
+            rpfm_vgm_pause();
+            key_off_all();
+        } else {
+            ApplyShadowState();
+            rpfm_vgm_resume();
+        }
+    }
 }
 
 static void OpenVGMFileDialog(void) {
@@ -2219,20 +2260,68 @@ static void OpenVGMFileDialog(void) {
 }
 
 static void SeekVGMToStart(void) {
+    SeekVGM(0);
+}
+
+static void SeekVGM(uint32_t targetSample) {
     if (!s_vgmLoaded) return;
-    if (s_vgmPlaying) { s_vgmPlaying = false; s_vgmPaused = false; }
-    if (s_connected) InitHardware();
-    if (s_memData.empty()) {
-        if (s_vgmFile) fclose(s_vgmFile);
-        s_vgmFile = ym_fopen(s_vgmPath, "rb");
-        if (!s_vgmFile) return;
-        vgmfseek(s_vgmFile, s_vgmDataOffset, SEEK_SET);
-    } else {
-        s_memPos = s_vgmDataOffset;
+    targetSample = (std::min)(targetSample, s_vgmTotalSamples);
+
+    // 1. Stop threads
+    bool wasPlaying = s_vgmPlaying;
+    s_vgmPlaying = false;
+    s_vgmPaused = false;
+    s_vizRunning = false;
+    s_vgmStreamRunning = false;
+    s_vgmThreadRunning = false;
+    if (s_vizThread) { WaitForSingleObject(s_vizThread, 2000); CloseHandle(s_vizThread); s_vizThread = nullptr; }
+    if (s_vgmStreamThread) { WaitForSingleObject(s_vgmStreamThread, 2000); CloseHandle(s_vgmStreamThread); s_vgmStreamThread = nullptr; }
+    if (s_vgmThread) { WaitForSingleObject(s_vgmThread, 2000); CloseHandle(s_vgmThread); s_vgmThread = nullptr; }
+
+    // 2. Stop firmware + clear buffer
+    if (s_connected) { rpfm_vgm_stop(); InitHardware(); }
+
+    // 3. Silent fast-forward to target sample
+    VizVGMReader seekReader;
+    if (!seekReader.open(s_vgmPath, s_vgmDataOffset)) return;
+    uint32_t skipSamples = 0;
+    while (skipSamples < targetSample) {
+        int w = VizProcessCommand(seekReader);
+        if (w < 0) break;
+        if (w > 0) {
+            skipSamples += w;
+            if (skipSamples > targetSample) { skipSamples = targetSample; break; }
+        }
     }
-    s_vgmCurrentSamples = 0; s_vgmLoopCount = 0;
+
+    // 4. Update state
+    s_vgmCurrentSamples = targetSample;
+    s_fwTick = targetSample;
+    s_vgmLoopCount = 0;
+    s_vizLoopCount = 0;
     s_vgmTrackEnded = false;
-    s_fadeoutActive = false; s_fadeoutLevel = 1.0f;
+    s_fadeoutActive = false;
+    s_fadeoutLevel = 1.0f;
+
+    // 5. Restore shadow state to hardware (firmware is stopped, buffer empty)
+    if (s_connected) ApplyShadowState();
+
+    // 6. Store seek position for threads to use
+    s_vgmSeekPos = seekReader.pos;
+
+    // 7. Restart threads from seek position
+    if (wasPlaying) {
+        s_vgmPlaying = true;
+        if (s_playbackMode == 1) {
+            s_vizRunning = true;
+            s_vizThread = CreateThread(NULL, 0, VGMVisualizationThread, NULL, 0, NULL);
+            s_bufLevel = 0;
+            s_streamSent = 0;
+            s_streamTotal = 0;
+            s_vgmStreamRunning = true;
+            s_vgmStreamThread = CreateThread(NULL, 0, VGMStreamThread, NULL, 0, NULL);
+        }
+    }
 }
 
 static void PlayPlaylistNext(void) {
@@ -3284,7 +3373,8 @@ static VGMPlayerCallbacks GetPlayerCallbacks(void) {
         s_vgmPath, &s_vgmLoaded, &s_vgmPlaying, &s_vgmPaused,
         &s_vgmTotalSamples, &s_vgmCurrentSamples, &s_vgmLoopSamples, &s_vgmLoopCount,
         &s_autoPlayNext, &s_isSequentialPlayback, &s_playlist, &s_showPlayerSettings,
-        StartVGMPlayback, StopVGMPlayback, PauseVGMPlayback, SeekVGMToStart,
+        &s_vgmLoopEnabled,
+        StartVGMPlayback, StopVGMPlayback, PauseVGMPlayback, SeekVGMToStart, SeekVGM,
         PlayPlaylistNext, PlayPlaylistPrev, OpenVGMFileDialog
     };
 }
