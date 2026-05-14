@@ -836,7 +836,7 @@ static void LoadConfig(void) {
 
     // Folder history
     s_folderHistory.clear();
-    for (int i = 0; i < 50; i++) {
+    for (int i = 0; i < 200; i++) {
         char key[64];
         snprintf(key, sizeof(key), "Folder%d", i);
         char val[MAX_PATH] = "";
@@ -908,7 +908,7 @@ static void SaveConfig(void) {
       WritePrivateProfileStringA("Settings", "CustomClock", clkTmp2, s_configPath); }
 
     WritePrivateProfileStringA("YmFolderHistory", NULL, NULL, s_configPath);
-    for (int i = 0; i < (int)s_folderHistory.size() && i < 50; i++) {
+    for (int i = 0; i < (int)s_folderHistory.size() && i < 200; i++) {
         char key[64];
         snprintf(key, sizeof(key), "Folder%d", i);
         WritePrivateProfileStringA("YmFolderHistory", key, s_folderHistory[i].c_str(), s_configPath);
@@ -956,7 +956,7 @@ static void AddToFolderHistory(const char* path) {
         }
     }
     s_folderHistory.insert(s_folderHistory.begin(), std::string(path));
-    if (s_folderHistory.size() > 50) s_folderHistory.resize(50);
+    if (s_folderHistory.size() > 200) s_folderHistory.resize(200);
 }
 
 static void RefreshFileList(void) {
@@ -1822,11 +1822,11 @@ static ShadowRegDelayQueue s_shadowQueue;
 // VGM parse state machine for shadow register sync in buffered mode
 // Visualization thread: independent local VGM playback at real speed (44100Hz)
 // Same architecture as live-mode VGMPlaybackThread, but only updates shadow registers
-static DWORD WINAPI VGMVisualizationThread(LPVOID) {
-    DcLog("[Viz] Thread started, dataOffset=%u seekPos=%u\n", s_vgmDataOffset, (unsigned)s_vgmSeekPos);
+static DWORD WINAPI VGMVisualizationThread(LPVOID param) {
+    size_t seekPos = (size_t)param;
+    size_t startPos = seekPos > 0 ? seekPos : s_vgmDataOffset;
 
     VizVGMReader reader;
-    size_t startPos = s_vgmSeekPos > 0 ? s_vgmSeekPos : s_vgmDataOffset;
     if (!reader.open(s_vgmPath, startPos)) { DcLog("[Viz] Failed to open VGM\n"); return 1; }
     std::atomic_thread_fence(std::memory_order_acquire);
 
@@ -1889,7 +1889,9 @@ static DWORD WINAPI VGMVisualizationThread(LPVOID) {
 }
 
 // Buffered mode: stream raw VGM bytes to firmware via CMD_VGM_DATA
-static DWORD WINAPI VGMStreamThread(LPVOID) {
+static DWORD WINAPI VGMStreamThread(LPVOID param) {
+    size_t seekPos = (size_t)param;
+
     // Lower thread priority so GUI main thread gets priority for rendering
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
 
@@ -1907,7 +1909,7 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
     if (!s_memData.empty()) {
         // Copy from already-decompressed memory
         localData = s_memData;
-        size_t startPos = s_vgmSeekPos > 0 ? s_vgmSeekPos : s_vgmDataOffset;
+        size_t startPos = seekPos > 0 ? seekPos : s_vgmDataOffset;
         localPos = startPos;
         localTotal = (uint32_t)(localData.size() - startPos);
     } else {
@@ -1922,7 +1924,7 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
             fclose(f); s_vgmStreamRunning = false; return 0;
         }
         fclose(f);
-        size_t startPos = s_vgmSeekPos > 0 ? s_vgmSeekPos : s_vgmDataOffset;
+        size_t startPos = seekPos > 0 ? seekPos : s_vgmDataOffset;
         localPos = startPos;
         localTotal = (uint32_t)(localData.size() - startPos);
     }
@@ -1939,7 +1941,8 @@ static DWORD WINAPI VGMStreamThread(LPVOID) {
     uint32_t bufTargetBytes = kBufSizes[s_bufTargetKB];
     if (bufTargetBytes > s_bufTotal) bufTargetBytes = s_bufTotal;
 
-    DcLog("[VGM-Stream] Total data: %u bytes\n", localTotal);
+    DcLog("[VGM-Stream] Total data: %u bytes, startPos=%u\n",
+          localTotal, (unsigned)localPos);
 
     // Phase 1: Pre-fill firmware buffer before starting timer
     uint32_t prefillAmount = (localTotal > bufTargetBytes / 4) ? bufTargetBytes / 4 : localTotal;
@@ -2156,10 +2159,15 @@ static DWORD WINAPI VGMPlaybackThread(LPVOID) {
     return 0;
 }
 
+static size_t s_startSeekPos = 0;
+
 static void StartVGMPlayback(void) {
+    size_t seekPos = s_startSeekPos;
+    s_startSeekPos = 0;
     if (!s_vgmLoaded) return;
     StopTest();
-    if (s_connected) InitHardware();
+
+    if (seekPos == 0 && s_connected) InitHardware();
 
     // Stop existing threads
     if (s_vgmThreadRunning) {
@@ -2175,24 +2183,26 @@ static void StartVGMPlayback(void) {
         if (s_vizThread) { WaitForSingleObject(s_vizThread, 2000); CloseHandle(s_vizThread); s_vizThread = nullptr; }
     }
 
-    s_vgmCurrentSamples = 0;
+    if (seekPos == 0) {
+        s_vgmCurrentSamples = 0;
+        s_vgmLoopCount = 0;
+        s_vizLoopCount = 0;
+    }
     s_vgmPlaying = true;
     s_vgmPaused = false;
     s_vgmTrackEnded = false;
-    s_vgmLoopCount = 0;
-    s_vgmSeekPos = 0;
 
     if (s_playbackMode == 1) {
         // Buffered mode: VGMStreamThread handles HID streaming, VizThread handles local visualization
         s_vizLoopCount = 0;
         s_vizRunning = true;
-        s_vizThread = CreateThread(NULL, 0, VGMVisualizationThread, NULL, 0, NULL);
+        s_vizThread = CreateThread(NULL, 0, VGMVisualizationThread, (LPVOID)(uintptr_t)seekPos, 0, NULL);
 
         s_bufLevel = 0;
         s_streamSent = 0;
         s_streamTotal = 0;
         s_vgmStreamRunning = true;
-        s_vgmStreamThread = CreateThread(NULL, 0, VGMStreamThread, NULL, 0, NULL);
+        s_vgmStreamThread = CreateThread(NULL, 0, VGMStreamThread, (LPVOID)(uintptr_t)seekPos, 0, NULL);
     } else {
         // Live mode: seek to data start, use VGMPlaybackThread
         if (s_memData.empty()) {
@@ -2237,7 +2247,7 @@ static void PauseVGMPlayback(void) {
     if (s_connected && s_playbackMode == 1) {
         if (s_vgmPaused) {
             rpfm_vgm_pause();
-            key_off_all();
+            InitHardware();
         } else {
             ApplyShadowState();
             rpfm_vgm_resume();
@@ -2267,8 +2277,7 @@ static void SeekVGM(uint32_t targetSample) {
     if (!s_vgmLoaded) return;
     targetSample = (std::min)(targetSample, s_vgmTotalSamples);
 
-    // 1. Stop threads
-    bool wasPlaying = s_vgmPlaying;
+    // 1. Stop playback (same as StartVGMPlayback preamble)
     s_vgmPlaying = false;
     s_vgmPaused = false;
     s_vizRunning = false;
@@ -2277,11 +2286,9 @@ static void SeekVGM(uint32_t targetSample) {
     if (s_vizThread) { WaitForSingleObject(s_vizThread, 2000); CloseHandle(s_vizThread); s_vizThread = nullptr; }
     if (s_vgmStreamThread) { WaitForSingleObject(s_vgmStreamThread, 2000); CloseHandle(s_vgmStreamThread); s_vgmStreamThread = nullptr; }
     if (s_vgmThread) { WaitForSingleObject(s_vgmThread, 2000); CloseHandle(s_vgmThread); s_vgmThread = nullptr; }
-
-    // 2. Stop firmware + clear buffer
     if (s_connected) { rpfm_vgm_stop(); InitHardware(); }
 
-    // 3. Silent fast-forward to target sample
+    // 2. Silent fast-forward to target sample (updates shadow registers)
     VizVGMReader seekReader;
     if (!seekReader.open(s_vgmPath, s_vgmDataOffset)) return;
     uint32_t skipSamples = 0;
@@ -2294,7 +2301,7 @@ static void SeekVGM(uint32_t targetSample) {
         }
     }
 
-    // 4. Update state
+    // 3. Set state for StartVGMPlayback
     s_vgmCurrentSamples = targetSample;
     s_fwTick = targetSample;
     s_vgmLoopCount = 0;
@@ -2302,26 +2309,14 @@ static void SeekVGM(uint32_t targetSample) {
     s_vgmTrackEnded = false;
     s_fadeoutActive = false;
     s_fadeoutLevel = 1.0f;
-
-    // 5. Restore shadow state to hardware (firmware is stopped, buffer empty)
-    if (s_connected) ApplyShadowState();
-
-    // 6. Store seek position for threads to use
     s_vgmSeekPos = seekReader.pos;
 
-    // 7. Restart threads from seek position
-    if (wasPlaying) {
-        s_vgmPlaying = true;
-        if (s_playbackMode == 1) {
-            s_vizRunning = true;
-            s_vizThread = CreateThread(NULL, 0, VGMVisualizationThread, NULL, 0, NULL);
-            s_bufLevel = 0;
-            s_streamSent = 0;
-            s_streamTotal = 0;
-            s_vgmStreamRunning = true;
-            s_vgmStreamThread = CreateThread(NULL, 0, VGMStreamThread, NULL, 0, NULL);
-        }
-    }
+    // 4. Write shadow registers to hardware so chip state matches seek position
+    if (s_connected) ApplyShadowState();
+
+    // 5. Start playback from seek position
+    s_startSeekPos = seekReader.pos;
+    StartVGMPlayback();
 }
 
 static void PlayPlaylistNext(void) {
