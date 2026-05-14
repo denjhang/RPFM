@@ -154,6 +154,11 @@ bool rpfm_send_vgm_data(const uint8_t *data, uint8_t len, uint16_t *buf_level, u
     return ok;
 }
 
+bool rpfm_send_vgm_data_fast(const uint8_t *data, uint8_t len) {
+    s_seq = (s_seq + 1) & 0xFF;
+    return rpfm_hid_send_frame(CMD_VGM_DATA, s_seq, data, len, NULL);
+}
+
 bool rpfm_vgm_start(uint16_t loop_offset, uint8_t *status) {
     s_seq = (s_seq + 1) & 0xFF;
     uint8_t payload[2] = { (uint8_t)(loop_offset & 0xFF), (uint8_t)(loop_offset >> 8) };

@@ -190,9 +190,9 @@ static uint16_t s_bufLevel = 0;
 static uint32_t s_bufTotal = 2048;
 static uint32_t s_streamSent = 0;
 static uint32_t s_streamTotal = 0;
-static int s_bufTargetKB = 0;  // 0=512B (default), 1=1KB, ..., 5=8KB
-static const uint32_t kBufSizes[] = {512, 1024, 2048, 3072, 4096, 8192};
-static const int kBufSizeCount = 6;
+static int s_bufTargetKB = 0;  // 0=1KB, ..., 14=32KB
+static const uint32_t kBufSizes[] = {1024, 2048, 3072, 4096, 6144, 8192, 10240, 12288, 14336, 16384, 20480, 24576, 28672, 32768};
+static const int kBufSizeCount = 14;
 static HANDLE s_vgmStreamThread = nullptr;
 static volatile bool s_vgmStreamRunning = false;
 
@@ -906,7 +906,7 @@ static void LoadConfig(void) {
     if (s_playbackMode < 0 || s_playbackMode > 1) s_playbackMode = 0;
     s_muteMode = GetPrivateProfileIntA("Settings", "MuteMode", 0, s_configPath);
     if (s_muteMode < 0 || s_muteMode > 1) s_muteMode = 0;
-    s_bufTargetKB = GetPrivateProfileIntA("Settings", "BufTargetKB", 5, s_configPath);
+    s_bufTargetKB = GetPrivateProfileIntA("Settings", "BufTargetKB", 4, s_configPath);
     if (s_bufTargetKB < 0) s_bufTargetKB = 0;
     if (s_bufTargetKB >= kBufSizeCount) s_bufTargetKB = kBufSizeCount - 1;
     s_bufTotal = kBufSizes[s_bufTargetKB];
@@ -2120,26 +2120,33 @@ static DWORD WINAPI VGMStreamThread(LPVOID param) {
                 allDataSent = true;
                 DcLog("[VGM-Stream] All %u bytes sent, waiting for firmware to finish\n", s_streamSent);
             } else {
-                size_t toSend = (remain > 60) ? 60 : remain;
-                uint16_t newBufLevel = 0;
-                if (s_muteMode == 0) patchMute(&localData[localPos], toSend);
-                if (!rpfm_send_vgm_data(&localData[localPos], (uint8_t)toSend, &newBufLevel, &fwTick)) {
-                    streamFails++;
-                    if (streamFails >= 20) {
-                        DcLog("[VGM-Stream] HID send failed 20 times, stopping\n");
-                        s_vgmPlaying = false; s_vgmTrackEnded = true;
-                        break;
+                // Send up to 8 frames per iteration for throughput
+                int frames = 0;
+                while (remain > 0 && frames < 8) {
+                    if (s_bufLevel > bufTargetBytes * 3 / 4) break;
+                    size_t toSend = (remain > 60) ? 60 : remain;
+                    if (s_muteMode == 0) patchMute(&localData[localPos], toSend);
+                    if (!rpfm_send_vgm_data_fast(&localData[localPos], (uint8_t)toSend)) {
+                        streamFails++;
+                        if (streamFails >= 20) {
+                            DcLog("[VGM-Stream] HID send failed 20 times, stopping\n");
+                            s_vgmPlaying = false; s_vgmTrackEnded = true;
+                            break;
+                        }
+                        Sleep(3);
+                        continue;
                     }
-                    DcLog("[VGM-Stream] HID send fail #%d, retrying...\n", streamFails);
-                    Sleep(3);
-                    continue;
+                    streamFails = 0;
+                    localPos += toSend;
+                    s_streamSent += (uint32_t)toSend;
+                    remain = localTotal - s_streamSent;
+                    frames++;
                 }
-                streamFails = 0;
-                s_bufLevel = newBufLevel;
-                localPos += toSend;
-                s_streamSent += (uint32_t)toSend;
-
-                // Use firmware tick for accurate position tracking (progress bar uses s_fwTick)
+                // Poll buf level and tick once per batch
+                uint8_t dummy = 0;
+                uint16_t newBufLevel = 0;
+                if (rpfm_send_vgm_data(&dummy, 0, &newBufLevel, &fwTick))
+                    s_bufLevel = newBufLevel;
                 s_fwTick = fwTick;
             }
         }
@@ -3282,7 +3289,7 @@ static void RenderSidebar(void) {
 
     // Buffer target size (affects prefill and backpressure threshold)
     ImGui::TextDisabled("Buffer Size");
-    const char* bufLabels[] = {"512 B","1 KB","2 KB","3 KB","4 KB","8 KB"};
+    const char* bufLabels[] = {"1 KB","2 KB","3 KB","4 KB","6 KB","8 KB","10 KB","12 KB","14 KB","16 KB","20 KB","24 KB","28 KB","32 KB"};
     if (ImGui::SliderInt("##aybufsz", &s_bufTargetKB, 0, kBufSizeCount - 1, bufLabels[s_bufTargetKB])) {
         s_bufTotal = kBufSizes[s_bufTargetKB];
         SaveConfig();

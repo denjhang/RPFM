@@ -11,9 +11,13 @@
 - **Live 模式通道屏蔽**：方波 ch0-ch2 音量写 0 + mixer 禁用 tone/noise；Noise ch3 mixer 禁用全部 noise 位 (0x38)；Envelope ch4 音量寄存器清除 bit4。Solo E/N 条件放行：solo E 时使用 envelope 模式的方波通道不被拦截，solo N 时 mixer 中 noise 启用的通道 tone 位不被拦截。参考 MDPlayer `setAY8910Register` 实现
 - **缓冲模式通道屏蔽**：`VGMStreamThread` 启动时备份原始数据 `localDataOrig`，发送前用 `patchMute` lambda 扫描修改 0xA0 命令中的音量/mixer 字节。`s_muteDirty` 标志触发时从备份恢复再重新 patch，支持 mute/unmute 切换。屏蔽逻辑与 Live 模式一致，参考 `CHANNEL_MUTE.md`
 - **固件级通道屏蔽**：新增 `CMD_SET_MUTE (0x0A)` 命令，固件 Core 1 VGM 循环中 `mute_intercept()` 在 `write_reg_ay()` 前拦截音量/mixer 寄存器写入，瞬间生效无延迟。上位机侧边栏新增 Host/Firmware 单选框切换屏蔽模式，Live 和缓冲模式通用。Firmware 模式下跳过上位机 patchMute，避免双重拦截
+- **YM2612 DAC 输出**：固件解析 VGM 0x52 命令时拦截 YM2612 DAC 寄存器 (0x2A/0x2B)，通过 GPIO22 硬件 PWM 输出 8-bit PCM 音频，支持 SNDH STE DMA 音频流
+- **缓冲区扩容**：缓冲区滑块范围从 512B-8KB 扩展到 1KB-32KB（14 档），支持数据量大的曲目
+- **VGM 流传输优化**：`VGMStreamThread` 每次迭代最多发送 8 帧（fire-and-forget 模式），每批仅轮询一次固件 buf_level/tick，减少 HID 同步读取开销，缓冲区未满时吞吐量显著提升
 
 ### Changed
 - **文件夹历史**：上限从 50 条增加到 200 条
+- **缓冲区默认值**：默认缓冲区从 8KB 调整为 6KB
 - **UI 暂停判断**：`isPaused` 不再依赖 `s_vgmPlaying`，暂停停止播放后 UI 仍能正确识别暂停状态
 
 ## [0.1] - 2026-05-13
