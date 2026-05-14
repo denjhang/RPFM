@@ -142,7 +142,9 @@ Windows desktop player built with Dear ImGui, supporting AY8910 live/buffered du
 - **Level meters** — unified volume bars for all modes (tone/noise/env/DAC), dB scale, click-to-mute/solo
 - **Register table** — live shadow register view: tone, noise, mixer, volume, envelope
 - **Oscilloscope** — configurable waveform display
-- **Playback controls** — VGM file loading, play/pause/stop, progress bar, loop support
+- **Playback controls** — VGM file loading, play/pause/stop, seek (progress bar drag), loop with configurable count
+- **Pause / Seek** — Pause stops playback and remembers position; resume seeks to that position. Progress bar drag = stop → silent fast-forward → restart from target position
+- **Loop expansion** — VGM loop sections expanded in memory to linear data; loop count adjustable, loop on/off toggle
 - **Sidebar config** — PIO delay adjustment, buffer size (512 B–8 KB), playback mode, clock correction
 - **Tick display** — firmware playback position / total ticks with time readout
 - **Playback stability** — HID write retry, multimedia timer polling, failure recovery
@@ -236,6 +238,7 @@ RPFM is the third generation: IAP-RESPFM (2022, STM32F103) → DIY SPFM (2024, S
 
 See [CHANGELOG.md](CHANGELOG.md) for full release notes.
 
+- **2026-05-14** — Buffered mode pause/seek/loop: pause reuses stop+seek, loop expansion to linear data, progress bar seek
 - **2026-05-13** — Playback stability: HID retry, multimedia timer, buffer 512 B–8 KB, instant visualization
 - **2026-05-13** — AY8910 level meter rework: unified volume bars, DAC/ENV mode display
 - **2026-05-13** — GPIO pinout expansion plan (RP2350A/B, touchscreen, SD, USB Host MIDI)

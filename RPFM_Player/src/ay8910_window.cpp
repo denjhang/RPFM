@@ -504,10 +504,25 @@ UINT8 UpdateAY8910State(UINT16 reg, UINT8 data) {
         s_vol[reg - 0x08] = data;
     }
 
-    // Channel mute: intercept volume writes
+    // Channel mute: intercept volume writes (MDPlayer: dData = mask ? 0 : dData)
     if (reg >= 0x08 && reg <= 0x0A) {
         int ch = reg - 0x08;
-        if (s_chMuted[ch]) data = (data & 0xF0) | 0x0F;
+        if (s_chMuted[ch]) data = 0;
+        if (s_chMuted[4]) data &= ~0x10;  // envelope mute
+    }
+
+    // Channel mute: intercept mixer writes (MDPlayer: maskData |= 0x9 << ch)
+    if (reg == 0x07) {
+        for (int ch = 0; ch < 3; ch++) {
+            if (s_chMuted[ch]) data |= (0x09 << ch);
+        }
+        // Noise mute: disable all noise bits
+        if (s_chMuted[3]) data |= 0x38;
+    }
+
+    // Envelope mute: disable envelope bit4 on all volume registers
+    if (reg >= 0x08 && reg <= 0x0A) {
+        if (s_chMuted[4]) data &= ~0x10;
     }
 
     return data;
@@ -525,6 +540,11 @@ UINT8 UpdateAY8910State2(UINT16 reg, UINT8 data) {
         s2_noisePeriod = data;
     } else if (reg == 0x07) {
         s2_mixer = data;
+        // Channel mute for 2nd chip mixer
+        for (int ch = 0; ch < 3; ch++) {
+            if (s_chMuted[AY_CH_PER_CHIP + ch]) data |= (0x09 << ch);
+        }
+        if (s_chMuted[AY_CH_PER_CHIP + 3]) data |= 0x38;
         for (int i = 0; i < 3; i++) {
             s2_toneOn[i] = !(data & (1 << i));
             s2_noiseOn[i] = !(data & (1 << (i + 3)));
@@ -550,6 +570,9 @@ UINT8 UpdateAY8910State2(UINT16 reg, UINT8 data) {
         }
         else { s2_chKeyOff[ch] = true; }
         if (s2_noiseOn[ch] && (data & 0x0F) > 0) s2_noiseDecay = 1.0f;
+        // Channel mute for 2nd chip
+        if (s_chMuted[AY_CH_PER_CHIP + ch]) data = 0;
+        if (s_chMuted[AY_CH_PER_CHIP + 4]) data &= ~0x10;
     } else if (reg == 0x0B) {
         s2_envFine = data;
         for (int i = 0; i < 3; i++) {
@@ -2729,11 +2752,18 @@ static void ApplyChannelMute(int i) {
                     mixer |= (0x9 << c);
                 }
             }
+            if (s_chMuted[chip * AY_CH_PER_CHIP + 3]) mixer |= 0x38;
             ay8910_write_reg((uint8_t)chip, 0x07, mixer);
+            // Envelope mute: clear bit4 on all volume regs
+            if (s_chMuted[chip * AY_CH_PER_CHIP + 4]) {
+                const uint8_t* vol = (chip == 0) ? s_vol : s2_vol;
+                for (int c = 0; c < 3; c++) {
+                    ay8910_write_reg((uint8_t)chip, 0x08 + c, vol[c] & ~0x10);
+                }
+            }
             safe_flush();
         }
     }
-    // Noise/Env: visual mute only
 }
 
 static void RenderLevelMeters(void) {
