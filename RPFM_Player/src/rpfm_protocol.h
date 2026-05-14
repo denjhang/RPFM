@@ -18,6 +18,7 @@
 #define CMD_VGM_STOP   0x06
 #define CMD_BOOTSEL    0x20
 #define CMD_SET_DELAY  0x21
+#define CMD_SET_MUTE   0x0A
 #define CMD_NOP        0xFF
 
 // STATUS bits

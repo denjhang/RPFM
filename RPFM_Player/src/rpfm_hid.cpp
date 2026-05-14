@@ -136,6 +136,13 @@ bool rpfm_set_ay_delay(uint8_t delay_100ns) {
     return rpfm_hid_send_frame(CMD_SET_DELAY, 0, payload, 1, NULL);
 }
 
+bool rpfm_set_mute(uint8_t mask, int8_t solo) {
+    s_seq = (s_seq + 1) & 0xFF;
+    uint8_t payload[2] = { mask, (uint8_t)solo };
+    rpfm_resp_t resp;
+    return rpfm_hid_send_frame(CMD_SET_MUTE, s_seq, payload, 2, &resp);
+}
+
 bool rpfm_send_vgm_data(const uint8_t *data, uint8_t len, uint16_t *buf_level, uint32_t *tick) {
     s_seq = (s_seq + 1) & 0xFF;
     rpfm_resp_t resp;

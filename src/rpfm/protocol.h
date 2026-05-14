@@ -30,6 +30,7 @@
 #define CMD_QUERY       0x10
 #define CMD_BOOTSEL     0x20
 #define CMD_SET_DELAY   0x21  // [delay_us(1B)] — set AY8910 PIO write delay (0-20µs)
+#define CMD_SET_MUTE    0x0A  // [mask(1B), solo(1B)] — set channel mute mask
 #define CMD_NOP         0xFF
 
 // STATUS bits

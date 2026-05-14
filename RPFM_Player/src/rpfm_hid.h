@@ -27,6 +27,7 @@ bool rpfm_write_reg_ay(uint8_t slot, uint8_t addr, uint8_t data, rpfm_resp_t *re
 bool rpfm_send_bootsel(void);
 bool rpfm_send_reset(void);
 bool rpfm_set_ay_delay(uint8_t delay_us);
+bool rpfm_set_mute(uint8_t mask, int8_t solo);
 
 // VGM streaming
 bool rpfm_send_vgm_data(const uint8_t *data, uint8_t len, uint16_t *buf_level, uint32_t *tick);

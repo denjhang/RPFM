@@ -257,6 +257,14 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
             s_ay_delay_100ns = payload[0];
         break;
     }
+    case CMD_SET_MUTE: {
+        if (len >= 2) {
+            uint8_t mask = payload[0];
+            int8_t solo = (int8_t)payload[1];
+            vgm_player_set_mute(mask, solo);
+        }
+        break;
+    }
     case CMD_NOP:
     default:
         break;

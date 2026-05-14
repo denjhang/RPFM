@@ -43,6 +43,10 @@ static volatile int s_vgm_max_loops = 2;
 static volatile bool s_vgm_started = false;
 static volatile uint32_t s_vgm_tick = 0;  // current playback sample position (44100 Hz)
 
+// Channel mute: bit0-2=tone chA/B/C, bit3=noise, bit4=envelope
+static volatile uint8_t s_mute_mask = 0;
+static volatile int8_t s_solo_ch = -1;  // -1=none, 3=noise, 4=envelope
+
 // Forward declarations from main.c
 static inline void cs_select(uint8_t slot);
 static inline void write_reg_ay(uint8_t slot, uint8_t addr, uint8_t data);
@@ -61,6 +65,32 @@ static inline void vgm_skip_bytes(int n) {
 }
 
 // ========== Core 1 VGM Player (MegaGRRL-style) ==========
+
+static inline uint8_t mute_intercept(uint8_t type_byte, uint8_t data) {
+    uint8_t mute = s_mute_mask;
+    if (!mute && s_solo_ch < 0) return data;
+
+    uint8_t reg = type_byte & 0x7F;  // strip chipID bit7
+
+    if (reg >= 0x08 && reg <= 0x0A) {
+        int ch = reg - 0x08;
+        if (mute & (1 << ch)) {
+            if (s_solo_ch == 4 && (data & 0x10)) { /* solo E pass */ }
+            else data = 0;
+        }
+        if (mute & 0x10) data &= ~0x10;
+    }
+    if (reg == 0x07) {
+        for (int ch = 0; ch < 3; ch++) {
+            if (mute & (1 << ch)) {
+                if (s_solo_ch == 3 && !(data & (1 << (ch + 3)))) { /* solo N pass */ }
+                else data |= (0x09 << ch);
+            }
+        }
+        if (mute & 0x08) data |= 0x38;
+    }
+    return data;
+}
 
 static void core1_vgm_main(void) {
     uint64_t cycle_us = 0;
@@ -117,6 +147,7 @@ static void core1_vgm_main(void) {
                     s_status &= ~STATUS_PLAYING;
                     break;
                 }
+                data = mute_intercept(reg, data);
                 write_reg_ay(0, reg, data);
                 // Don't break — process next command immediately
             }
@@ -191,6 +222,11 @@ static void vgm_player_start(uint32_t loop_offset) {
 
 static void vgm_player_stop(void) {
     s_status &= ~STATUS_PLAYING;
+}
+
+static void vgm_player_set_mute(uint8_t mask, int8_t solo) {
+    s_mute_mask = mask;
+    s_solo_ch = solo;
 }
 
 #endif
