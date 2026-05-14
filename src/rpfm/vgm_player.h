@@ -41,7 +41,6 @@ static volatile uint32_t s_vgm_loop_offset = 0;  // 0 = no loop
 static volatile int s_vgm_loop_count = 0;
 static volatile int s_vgm_max_loops = 2;
 static volatile bool s_vgm_started = false;
-static volatile bool s_vgm_paused = false;
 static volatile uint32_t s_vgm_tick = 0;  // current playback sample position (44100 Hz)
 
 // Forward declarations from main.c
@@ -89,12 +88,6 @@ static void core1_vgm_main(void) {
             next_sample = 0;
             s_vgm_tick = 0;
             last_cc = timer_hw->timerawl;
-        }
-
-        // Pause: freeze time, don't consume buffer
-        if (s_vgm_paused) {
-            last_cc = timer_hw->timerawl;
-            continue;
         }
 
         // Accumulate elapsed microseconds
@@ -192,17 +185,12 @@ static void vgm_player_init(cmd_buf_t *buf, PIO pio, uint sm) {
 static void vgm_player_start(uint32_t loop_offset) {
     s_vgm_loop_offset = loop_offset;
     s_vgm_loop_count = 0;
-    s_vgm_paused = false;
     s_vgm_started = false;
     s_status |= STATUS_PLAYING;
 }
 
 static void vgm_player_stop(void) {
     s_status &= ~STATUS_PLAYING;
-    s_vgm_paused = false;
 }
-
-static inline void vgm_player_pause(void)  { s_vgm_paused = true; }
-static inline void vgm_player_resume(void) { s_vgm_paused = false; }
 
 #endif

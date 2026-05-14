@@ -27,7 +27,6 @@
 #define CMD_VGM_DATA    0x04  // [vgm_bytes...]
 #define CMD_VGM_START   0x05  // [sample_rate(2B LE)]
 #define CMD_VGM_STOP    0x06
-#define CMD_VGM_PAUSE   0x09  // [1=pause, 0=resume]
 #define CMD_QUERY       0x10
 #define CMD_BOOTSEL     0x20
 #define CMD_SET_DELAY   0x21  // [delay_us(1B)] — set AY8910 PIO write delay (0-20µs)

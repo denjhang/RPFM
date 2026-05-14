@@ -2,28 +2,16 @@
 
 ## [Unreleased]
 
-### Changed
-- **暂停（缓冲模式）**：暂停时 `InitHardware()` 完整复位芯片（不污染 shadow），恢复时 `ApplyShadowState()` 从 shadow 恢复播放状态
-- **循环展开**：`LoadVGMFile` 中将循环段在内存中复制 N-1 次，展开为线性 VGM，固件 `loopOff=0` 不循环
-- **进度跳转**：`SeekVGM` 停止→清空缓冲区→静默快进到目标位置→`ApplyShadowState` 恢复硬件→`StartVGMPlayback` 从跳转位置重启线程
-- **文件夹历史**：上限从 50 条增加到 200 条
-- **缓冲模式可视化**：独立可视化线程，本地打开 VGM 文件按 44100Hz 独立解析，只更新影子寄存器不发 HID，与流线程完全解耦
-- **缓冲区范围**：512B ~ 8KB（原 64B ~ 2KB），默认 512B
-- **AY8910 电平表**：ch0-2 音量条反映真实音量寄存器值 (v/15)，vol=0 时快衰减；ch3 借用 noiseOn 通道最大音量；ch4 借用 ENV 通道最大音量（全部 vol=0 显示 "ENV" 满幅度）
-- **钢琴键盘**：纯真实音量驱动不衰减，ENV 模式 vol=0 时满幅度亮起显示音高
-- **电平表文字**：DAC 模式显示 "DAC:vol"，ENV 模式不再显示寄存器值，ch3/ch4 显示关联通道音量数字
-
 ### Added
-- **固件暂停命令**：`CMD_VGM_PAUSE 0x09`，Core 1 冻结时间累积（不清空缓冲区）
-- **HID pause/resume**：`rpfm_vgm_pause()` / `rpfm_vgm_resume()`
-- **循环开关**：`s_vgmLoopEnabled` 控制是否展开循环，UI checkbox
-- **进度条 seek 回调**：`VGMPlayerCallbacks.seekToPosition` + `vgmLoopEnabled`
-- **独立可视化线程**：`VGMVisualizationThread` + `VizVGMReader` + `VizProcessCommand`，缓冲模式下以纯 CPU 速度解析 VGM 更新影子寄存器，不受 USB HID I/O 影响
-- **跨线程内存屏障**：`std::atomic_thread_fence(acquire/release)` 确保 GUI 线程正确读取可视化线程写入的影子寄存器（修复 Release 编译下编译器缓存导致的可视化不更新）
-- **播放稳定性**：HID 写入 3 次重试（1ms 间隔），覆盖 CPU 高负载场景
-- **多媒体定时器**：缓冲模式 backpressure 轮询用 1ms 定时器替代 `Sleep(1)`
-- **失败恢复**：Prefill 连续失败 10 次退出，数据传输连续失败 20 次停止，线程退出统一标记播放停止状态
-- **GPIO 扩展规划**：RP2350A 实验版（触摸屏+SD卡）和 RP2350B 完整引脚分配文档
+- **缓冲模式暂停**：暂停 = `StopVGMPlayback` + 记住位置，恢复 = `SeekVGM(s_vgmCurrentSamples)` 从暂停位置快进后继续播放，无需固件暂停命令
+- **缓冲模式跳转（Seek）**：`SeekVGM` 停止固件→静默快进 VGM 到目标 sample→`ApplyShadowState` 恢复芯片状态→`StartVGMPlayback` 从跳转位置重启线程，线程起始字节偏移通过 `CreateThread` LPVOID 参数传递（避免共享变量竞态）
+- **循环展开**：`LoadVGMFile` 中将 VGM 循环段在内存中复制 N-1 次，展开为线性数据，固件 `loopOff=0` 不循环，进度条和 seek 统一在展开后的线性时间轴上操作
+- **循环开关**：`s_vgmLoopEnabled` 控制是否展开循环，关闭时播放到第一个 `0x66` 停止，UI checkbox
+- **进度条 seek 回调**：`VGMPlayerCallbacks.seekToPosition` + `vgmLoopEnabled` 指针接入 UI
+
+### Changed
+- **文件夹历史**：上限从 50 条增加到 200 条
+- **UI 暂停判断**：`isPaused` 不再依赖 `s_vgmPlaying`，暂停停止播放后 UI 仍能正确识别暂停状态
 
 ## [0.1] - 2026-05-13
 

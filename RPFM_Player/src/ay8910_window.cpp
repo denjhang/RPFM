@@ -2241,17 +2241,18 @@ static void StopVGMPlayback(void) {
 }
 
 static void PauseVGMPlayback(void) {
-    if (!s_vgmLoaded || !s_vgmPlaying) return;
-    s_vgmPaused = !s_vgmPaused;
+    if (!s_vgmLoaded) return;
 
-    if (s_connected && s_playbackMode == 1) {
-        if (s_vgmPaused) {
-            rpfm_vgm_pause();
-            InitHardware();
-        } else {
-            ApplyShadowState();
-            rpfm_vgm_resume();
-        }
+    if (!s_vgmPaused) {
+        // 暂停 = 停止播放，记住位置
+        uint32_t pos = s_vgmCurrentSamples;
+        StopVGMPlayback();
+        s_vgmCurrentSamples = pos;
+        s_vgmPaused = true;
+    } else {
+        // 恢复 = seek 到暂停位置继续播放
+        s_vgmPaused = false;
+        SeekVGM(s_vgmCurrentSamples);
     }
 }
 
@@ -2274,6 +2275,7 @@ static void SeekVGMToStart(void) {
 }
 
 static void SeekVGM(uint32_t targetSample) {
+    DcLog("[Seek] enter: targetSample=%u totalSamples=%u\n", targetSample, s_vgmTotalSamples);
     if (!s_vgmLoaded) return;
     targetSample = (std::min)(targetSample, s_vgmTotalSamples);
 
@@ -2316,7 +2318,10 @@ static void SeekVGM(uint32_t targetSample) {
 
     // 5. Start playback from seek position
     s_startSeekPos = seekReader.pos;
+    DcLog("[Seek] skipSamples=%u seekReader.pos=%u, calling StartVGMPlayback\n",
+          skipSamples, (unsigned)seekReader.pos);
     StartVGMPlayback();
+    DcLog("[Seek] done: playing=%d currentSamples=%u\n", s_vgmPlaying, s_vgmCurrentSamples);
 }
 
 static void PlayPlaylistNext(void) {

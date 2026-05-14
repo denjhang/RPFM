@@ -80,7 +80,7 @@ void RenderPlayerSettingsPopup(const VGMPlayerCallbacks& cb) {
 void RenderPlayerBar(const VGMPlayerCallbacks& cb) {
     bool hasFile = *cb.vgmLoaded;
     bool isPlaying = hasFile && *cb.vgmPlaying && !*cb.vgmPaused;
-    bool isPaused = hasFile && *cb.vgmPlaying && *cb.vgmPaused;
+    bool isPaused = hasFile && *cb.vgmPaused;
     int maxL = VGMSync::GetMaxLoops();
 
     // Collapsible header
