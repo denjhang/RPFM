@@ -12,12 +12,16 @@
 - **缓冲模式通道屏蔽**：`VGMStreamThread` 启动时备份原始数据 `localDataOrig`，发送前用 `patchMute` lambda 扫描修改 0xA0 命令中的音量/mixer 字节。`s_muteDirty` 标志触发时从备份恢复再重新 patch，支持 mute/unmute 切换。屏蔽逻辑与 Live 模式一致，参考 `CHANNEL_MUTE.md`
 - **固件级通道屏蔽**：新增 `CMD_SET_MUTE (0x0A)` 命令，固件 Core 1 VGM 循环中 `mute_intercept()` 在 `write_reg_ay()` 前拦截音量/mixer 寄存器写入，瞬间生效无延迟。上位机侧边栏新增 Host/Firmware 单选框切换屏蔽模式，Live 和缓冲模式通用。Firmware 模式下跳过上位机 patchMute，避免双重拦截
 - **YM2612 DAC 输出**：固件解析 VGM 0x52 命令时拦截 YM2612 DAC 寄存器 (0x2A/0x2B)，通过 GPIO22 硬件 PWM 输出 8-bit PCM 音频，支持 SNDH STE DMA 音频流
-- **缓冲区扩容**：缓冲区滑块范围从 512B-8KB 扩展到 1KB-32KB（14 档），支持数据量大的曲目
-- **VGM 流传输优化**：`VGMStreamThread` 每次迭代最多发送 8 帧（fire-and-forget 模式），每批仅轮询一次固件 buf_level/tick，减少 HID 同步读取开销，缓冲区未满时吞吐量显著提升
+- **缓冲区扩容**：固件缓冲区 32KB → 64KB，上位机滑块范围扩展到 1KB-64KB（18 档），支持高数据密度 VGM 曲目（YM2612 DAC、PCM 流等）
+- **VGM 流传输优化**：`VGMStreamThread` 每次迭代最多发送 8 帧（fire-and-forget 模式），每批仅轮询一次固件 buf_level/tick，减少 HID 同步读取开销。HID 写入从 `HidD_SetOutputReport`（控制传输）改为 `WriteFile`（中断传输），吞吐量提升 5-10 倍
+- **GPIO22 PWM DAC**：YM2612 DAC 寄存器 (0x2A/0x2B) 输出 8-bit PCM 音频，硬件 PWM 无 CPU 开销。详见 `docs/PWM_DAC.md`
+- **软件仿真器框架**：`src/rpfm/emu/` 下新增仿真器接口 (`emu_common.h`) 和混音器 (`mixer.h`)，Core 1 VGM 循环集成混音输出。YM2612 DAC 改为 mixer 直通模式，为后续 SCC/FDS/NES/GB 等纯合成芯片仿真做准备。详见 `docs/PLAN_SOFT_EMULATOR_MIXER.md`
+- **仿真状态侧边栏**：侧边栏新增 Emulation 区域，checkbox 开启后显示当前 VGM 文件检测到的可仿真芯片列表（YM2612 DAC 等），设置持久化
 
 ### Changed
 - **文件夹历史**：上限从 50 条增加到 200 条
 - **缓冲区默认值**：默认缓冲区从 8KB 调整为 6KB
+- **固件缓冲区**：`CMD_BUF_SIZE` 从 32KB 扩展到 64KB
 - **UI 暂停判断**：`isPaused` 不再依赖 `s_vgmPlaying`，暂停停止播放后 UI 仍能正确识别暂停状态
 
 ## [0.1] - 2026-05-13

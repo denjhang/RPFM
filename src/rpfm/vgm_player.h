@@ -11,6 +11,7 @@
 #include "spfm_bus.pio.h"
 #include "protocol.h"
 #include "hardware/pwm.h"
+#include "emu/mixer.h"
 
 #define PIN_DAC_PWM  22
 
@@ -51,6 +52,9 @@ static volatile uint8_t s_mute_mask = 0;
 static volatile int8_t s_solo_ch = -1;  // -1=none, 3=noise, 4=envelope
 static uint pwm_slice = 0;
 static volatile bool s_dac_enabled = false;
+
+// Mixer for software emulators + DAC passthrough
+static mixer_t s_mixer;
 
 static inline void dac_pwm_init(void) {
     gpio_set_function(PIN_DAC_PWM, GPIO_FUNC_PWM);
@@ -219,10 +223,14 @@ static void core1_vgm_main(void) {
                     break;
                 }
                 if (reg == 0x2A && s_dac_enabled) {
-                    dac_write(data);
+                    s_mixer.dac_sample = (int8_t)(data - 128);
+                    s_mixer.dac_active = true;
                 } else if (reg == 0x2B) {
                     s_dac_enabled = (data & 0x80) != 0;
-                    if (!s_dac_enabled) pwm_set_chan_level(pwm_slice, PWM_CHAN_A, 128);
+                    if (!s_dac_enabled) {
+                        s_mixer.dac_active = false;
+                        s_mixer.dac_sample = 0;
+                    }
                 }
             }
             else {
@@ -233,6 +241,13 @@ static void core1_vgm_main(void) {
 
         // Publish current tick for host sync
         s_vgm_tick = (uint32_t)next_sample;
+
+        // Mix all emulator outputs + DAC passthrough → PWM
+        uint8_t output = mixer_render(&s_mixer);
+        if (s_mixer.dac_active || s_mixer.active_count > 0)
+            dac_write(output);
+        else if (s_dac_enabled)
+            dac_write(128);  // silence when DAC enabled but no data yet
     }
 }
 
@@ -242,6 +257,7 @@ static void vgm_player_init(cmd_buf_t *buf, PIO pio, uint sm) {
     s_vgm_buf = buf;
     s_vgm_pio = pio;
     s_vgm_sm = sm;
+    mixer_init(&s_mixer);
     dac_pwm_init();
 }
 
@@ -249,6 +265,9 @@ static void vgm_player_start(uint32_t loop_offset) {
     s_vgm_loop_offset = loop_offset;
     s_vgm_loop_count = 0;
     s_vgm_started = false;
+    s_dac_enabled = false;
+    s_mixer.dac_active = false;
+    s_mixer.dac_sample = 0;
     s_status |= STATUS_PLAYING;
 }
 

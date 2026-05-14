@@ -186,13 +186,22 @@ static volatile size_t s_vgmSeekPos = 0;   // seek后线程从该位置开始读
 
 // Playback Mode: 0=Live (real-time register writes), 1=Buffered (stream raw VGM to firmware)
 static int s_muteMode = 0;  // 0=Host patch, 1=Firmware intercept
+static bool s_emuEnabled = false;  // emulation mode toggle
+static bool s_vgmHasDAC = false;   // YM2612 DAC detected (0x52 commands)
+static bool s_vgmHasSCC = false;
+static bool s_vgmHasFDS = false;
+static bool s_vgmHasNES = false;
+static bool s_vgmHasGB = false;
+static bool s_vgmHasWS = false;
+static bool s_vgmHasPCE = false;
+static int s_emuChipCount = 0;
 static uint16_t s_bufLevel = 0;
 static uint32_t s_bufTotal = 2048;
 static uint32_t s_streamSent = 0;
 static uint32_t s_streamTotal = 0;
 static int s_bufTargetKB = 0;  // 0=1KB, ..., 14=32KB
-static const uint32_t kBufSizes[] = {1024, 2048, 3072, 4096, 6144, 8192, 10240, 12288, 14336, 16384, 20480, 24576, 28672, 32768};
-static const int kBufSizeCount = 14;
+static const uint32_t kBufSizes[] = {1024, 2048, 3072, 4096, 6144, 8192, 10240, 12288, 14336, 16384, 20480, 24576, 28672, 32768, 40960, 49152, 57344, 65536};
+static const int kBufSizeCount = 18;
 static HANDLE s_vgmStreamThread = nullptr;
 static volatile bool s_vgmStreamRunning = false;
 
@@ -906,6 +915,7 @@ static void LoadConfig(void) {
     if (s_playbackMode < 0 || s_playbackMode > 1) s_playbackMode = 0;
     s_muteMode = GetPrivateProfileIntA("Settings", "MuteMode", 0, s_configPath);
     if (s_muteMode < 0 || s_muteMode > 1) s_muteMode = 0;
+    s_emuEnabled = GetPrivateProfileIntA("Settings", "EmuEnabled", 0, s_configPath) != 0;
     s_bufTargetKB = GetPrivateProfileIntA("Settings", "BufTargetKB", 4, s_configPath);
     if (s_bufTargetKB < 0) s_bufTargetKB = 0;
     if (s_bufTargetKB >= kBufSizeCount) s_bufTargetKB = kBufSizeCount - 1;
@@ -963,6 +973,7 @@ static void SaveConfig(void) {
     WritePrivateProfileStringA("Settings", "AyPioDelay", std::to_string(s_ayDelayNs).c_str(), s_configPath);
     WritePrivateProfileStringA("Settings", "PlaybackMode", std::to_string(s_playbackMode).c_str(), s_configPath);
     WritePrivateProfileStringA("Settings", "MuteMode", std::to_string(s_muteMode).c_str(), s_configPath);
+    WritePrivateProfileStringA("Settings", "EmuEnabled", std::to_string(s_emuEnabled ? 1 : 0).c_str(), s_configPath);
     WritePrivateProfileStringA("Settings", "BufTargetKB", std::to_string(s_bufTargetKB).c_str(), s_configPath);
     {
         char val[32];
@@ -1412,6 +1423,19 @@ static bool LoadVGMFile(const char* path) {
     // AY8910 clock at offset 0x74
     vgmfseek(f, 0x74, SEEK_SET);
     UINT32 ay8910Clock = ReadLE32(f);
+
+    // Detect emulatable chips from VGM header clock fields
+    s_vgmHasDAC = false; s_vgmHasSCC = false; s_vgmHasFDS = false;
+    s_vgmHasNES = false; s_vgmHasGB = false; s_vgmHasWS = false;
+    s_vgmHasPCE = false; s_emuChipCount = 0;
+    auto readChipClock = [&](long offset) -> UINT32 {
+        vgmfseek(f, offset, SEEK_SET);
+        return ReadLE32(f);
+    };
+    if (readChipClock(0x28) != 0) { s_vgmHasDAC = true; s_emuChipCount++; }  // YM2612
+    if (readChipClock(0x84) != 0) { s_vgmHasPCE = true; s_emuChipCount++; }  // HuC6280
+    // NES, FDS, SCC, GB, WSwan: detect by scanning VGM command stream for chip-specific opcodes
+    // (these don't have reliable clock fields in VGM header)
 
     // GD3 tags at 0x14
     vgmfseek(f, 0x14, SEEK_SET);
@@ -3253,6 +3277,27 @@ static void RenderSidebar(void) {
     ImGui::SameLine();
     if (ImGui::RadioButton("Firmware##mutemode", &s_muteMode, 1)) SaveConfig();
 
+    // Emulation status
+    ImGui::Spacing();
+    ImGui::TextDisabled("Emulation");
+    ImGui::Checkbox("Enable##emu", &s_emuEnabled);
+    if (s_emuEnabled) {
+        ImGui::Indent();
+        if (s_vgmLoaded && s_emuChipCount > 0) {
+            ImGui::Text("%d chip(s) detected:", s_emuChipCount);
+            if (s_vgmHasDAC)  ImGui::TextDisabled("  YM2612 DAC");
+            if (s_vgmHasSCC)  ImGui::TextDisabled("  SCC");
+            if (s_vgmHasFDS)  ImGui::TextDisabled("  FDS");
+            if (s_vgmHasNES)  ImGui::TextDisabled("  NES 2A03");
+            if (s_vgmHasGB)   ImGui::TextDisabled("  GameBoy");
+            if (s_vgmHasWS)   ImGui::TextDisabled("  WSwan");
+            if (s_vgmHasPCE)  ImGui::TextDisabled("  HuC6280");
+        } else {
+            ImGui::TextDisabled("No emulatable chips");
+        }
+        ImGui::Unindent();
+    }
+
     // Buffer status in buffered mode
     if (s_playbackMode == 1 && s_vgmPlaying) {
         ImGui::Spacing();
@@ -3289,7 +3334,7 @@ static void RenderSidebar(void) {
 
     // Buffer target size (affects prefill and backpressure threshold)
     ImGui::TextDisabled("Buffer Size");
-    const char* bufLabels[] = {"1 KB","2 KB","3 KB","4 KB","6 KB","8 KB","10 KB","12 KB","14 KB","16 KB","20 KB","24 KB","28 KB","32 KB"};
+    const char* bufLabels[] = {"1 KB","2 KB","3 KB","4 KB","6 KB","8 KB","10 KB","12 KB","14 KB","16 KB","20 KB","24 KB","28 KB","32 KB","40 KB","48 KB","56 KB","64 KB"};
     if (ImGui::SliderInt("##aybufsz", &s_bufTargetKB, 0, kBufSizeCount - 1, bufLabels[s_bufTargetKB])) {
         s_bufTotal = kBufSizes[s_bufTargetKB];
         SaveConfig();
