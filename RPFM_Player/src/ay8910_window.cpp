@@ -504,19 +504,26 @@ UINT8 UpdateAY8910State(UINT16 reg, UINT8 data) {
         s_vol[reg - 0x08] = data;
     }
 
-    // Channel mute: intercept volume writes (MDPlayer: dData = mask ? 0 : dData)
+    // Channel mute: intercept volume writes
     if (reg >= 0x08 && reg <= 0x0A) {
         int ch = reg - 0x08;
-        if (s_chMuted[ch]) data = 0;
+        if (s_chMuted[ch]) {
+            // Solo E: skip mute if this channel uses envelope mode
+            if (s_soloCh == 4 && (data & 0x10)) { /* pass through */ }
+            else data = 0;
+        }
         if (s_chMuted[4]) data &= ~0x10;  // envelope mute
     }
 
-    // Channel mute: intercept mixer writes (MDPlayer: maskData |= 0x9 << ch)
+    // Channel mute: intercept mixer writes
     if (reg == 0x07) {
         for (int ch = 0; ch < 3; ch++) {
-            if (s_chMuted[ch]) data |= (0x09 << ch);
+            if (s_chMuted[ch]) {
+                // Solo N: skip tone mute if channel has noise enabled
+                if (s_soloCh == 3 && !(data & (1 << (ch + 3)))) { /* pass tone through */ }
+                else data |= (0x09 << ch);
+            }
         }
-        // Noise mute: disable all noise bits
         if (s_chMuted[3]) data |= 0x38;
     }
 
@@ -542,7 +549,10 @@ UINT8 UpdateAY8910State2(UINT16 reg, UINT8 data) {
         s2_mixer = data;
         // Channel mute for 2nd chip mixer
         for (int ch = 0; ch < 3; ch++) {
-            if (s_chMuted[AY_CH_PER_CHIP + ch]) data |= (0x09 << ch);
+            if (s_chMuted[AY_CH_PER_CHIP + ch]) {
+                if (s_soloCh == AY_CH_PER_CHIP + 3 && !(data & (1 << (ch + 3)))) { /* pass */ }
+                else data |= (0x09 << ch);
+            }
         }
         if (s_chMuted[AY_CH_PER_CHIP + 3]) data |= 0x38;
         for (int i = 0; i < 3; i++) {
@@ -571,7 +581,10 @@ UINT8 UpdateAY8910State2(UINT16 reg, UINT8 data) {
         else { s2_chKeyOff[ch] = true; }
         if (s2_noiseOn[ch] && (data & 0x0F) > 0) s2_noiseDecay = 1.0f;
         // Channel mute for 2nd chip
-        if (s_chMuted[AY_CH_PER_CHIP + ch]) data = 0;
+        if (s_chMuted[AY_CH_PER_CHIP + ch]) {
+            if (s_soloCh == AY_CH_PER_CHIP + 4 && (data & 0x10)) { /* pass through */ }
+            else data = 0;
+        }
         if (s_chMuted[AY_CH_PER_CHIP + 4]) data &= ~0x10;
     } else if (reg == 0x0B) {
         s2_envFine = data;
@@ -2868,8 +2881,8 @@ static void RenderLevelMeters(void) {
                 s_soloCh = i;
                 for (int j = 0; j < AY_NUM_CHANNELS; j++) {
                     s_chMuted[j] = (j != i);
-                    ApplyChannelMute(j);
                 }
+                for (int j = 0; j < AY_NUM_CHANNELS; j++) ApplyChannelMute(j);
             }
         }
         if (ImGui::IsItemHovered()) {

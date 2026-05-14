@@ -8,6 +8,7 @@
 - **循环展开**：`LoadVGMFile` 中将 VGM 循环段在内存中复制 N-1 次，展开为线性数据，固件 `loopOff=0` 不循环，进度条和 seek 统一在展开后的线性时间轴上操作
 - **循环开关**：`s_vgmLoopEnabled` 控制是否展开循环，关闭时播放到第一个 `0x66` 停止，UI checkbox
 - **进度条 seek 回调**：`VGMPlayerCallbacks.seekToPosition` + `vgmLoopEnabled` 指针接入 UI
+- **Live 模式通道屏蔽**：方波 ch0-ch2 音量写 0 + mixer 禁用 tone/noise；Noise ch3 mixer 禁用全部 noise 位 (0x38)；Envelope ch4 音量寄存器清除 bit4。Solo E/N 条件放行：solo E 时使用 envelope 模式的方波通道不被拦截，solo N 时 mixer 中 noise 启用的通道 tone 位不被拦截。参考 MDPlayer `setAY8910Register` 实现
 
 ### Changed
 - **文件夹历史**：上限从 50 条增加到 200 条
