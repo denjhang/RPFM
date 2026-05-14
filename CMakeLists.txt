@@ -64,6 +64,7 @@ else()
         pico_stdlib
         hardware_gpio
         hardware_pio
+        hardware_pwm
         pico_multicore
         tinyusb_device
     )

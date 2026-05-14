@@ -10,6 +10,9 @@
 #include "command_buffer.h"
 #include "spfm_bus.pio.h"
 #include "protocol.h"
+#include "hardware/pwm.h"
+
+#define PIN_DAC_PWM  22
 
 // ========== VGM Command Length Table ==========
 // Total bytes including opcode. 0 = variable/special.
@@ -46,6 +49,21 @@ static volatile uint32_t s_vgm_tick = 0;  // current playback sample position (4
 // Channel mute: bit0-2=tone chA/B/C, bit3=noise, bit4=envelope
 static volatile uint8_t s_mute_mask = 0;
 static volatile int8_t s_solo_ch = -1;  // -1=none, 3=noise, 4=envelope
+static uint pwm_slice = 0;
+static volatile bool s_dac_enabled = false;
+
+static inline void dac_pwm_init(void) {
+    gpio_set_function(PIN_DAC_PWM, GPIO_FUNC_PWM);
+    pwm_slice = pwm_gpio_to_slice_num(PIN_DAC_PWM);
+    pwm_set_wrap(pwm_slice, 255);
+    pwm_set_chan_level(pwm_slice, PWM_CHAN_A, 128);  // mid = silence
+    pwm_set_enabled(pwm_slice, true);
+}
+
+static inline void dac_write(uint8_t data) {
+    // 8-bit unsigned → signed center at 128
+    pwm_set_chan_level(pwm_slice, PWM_CHAN_A, data);
+}
 
 // Forward declarations from main.c
 static inline void cs_select(uint8_t slot);
@@ -194,6 +212,19 @@ static void core1_vgm_main(void) {
                 }
                 if (!(s_status & STATUS_PLAYING)) break;
             }
+            else if (cmd == 0x52) {
+                uint8_t reg, data;
+                if (!vgm_read_byte(&reg) || !vgm_read_byte(&data)) {
+                    s_status &= ~STATUS_PLAYING;
+                    break;
+                }
+                if (reg == 0x2A && s_dac_enabled) {
+                    dac_write(data);
+                } else if (reg == 0x2B) {
+                    s_dac_enabled = (data & 0x80) != 0;
+                    if (!s_dac_enabled) pwm_set_chan_level(pwm_slice, PWM_CHAN_A, 128);
+                }
+            }
             else {
                 uint8_t skip = VGM_CMD_LEN[cmd];
                 if (skip > 1) vgm_skip_bytes(skip - 1);
@@ -211,6 +242,7 @@ static void vgm_player_init(cmd_buf_t *buf, PIO pio, uint sm) {
     s_vgm_buf = buf;
     s_vgm_pio = pio;
     s_vgm_sm = sm;
+    dac_pwm_init();
 }
 
 static void vgm_player_start(uint32_t loop_offset) {
