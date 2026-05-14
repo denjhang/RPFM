@@ -186,7 +186,7 @@ static volatile size_t s_vgmSeekPos = 0;   // seek后线程从该位置开始读
 
 // Playback Mode: 0=Live (real-time register writes), 1=Buffered (stream raw VGM to firmware)
 static int s_muteMode = 0;  // 0=Host patch, 1=Firmware intercept
-static bool s_emuEnabled = false;  // emulation mode toggle
+static bool s_emuEnabled = true;   // emulation mode toggle (default on)
 static bool s_vgmHasDAC = false;   // YM2612 DAC detected (0x52 commands)
 static bool s_vgmHasSCC = false;
 static bool s_vgmHasFDS = false;
@@ -915,7 +915,7 @@ static void LoadConfig(void) {
     if (s_playbackMode < 0 || s_playbackMode > 1) s_playbackMode = 0;
     s_muteMode = GetPrivateProfileIntA("Settings", "MuteMode", 0, s_configPath);
     if (s_muteMode < 0 || s_muteMode > 1) s_muteMode = 0;
-    s_emuEnabled = GetPrivateProfileIntA("Settings", "EmuEnabled", 0, s_configPath) != 0;
+    s_emuEnabled = GetPrivateProfileIntA("Settings", "EmuEnabled", 1, s_configPath) != 0;
     s_bufTargetKB = GetPrivateProfileIntA("Settings", "BufTargetKB", 4, s_configPath);
     if (s_bufTargetKB < 0) s_bufTargetKB = 0;
     if (s_bufTargetKB >= kBufSizeCount) s_bufTargetKB = kBufSizeCount - 1;
@@ -1432,10 +1432,8 @@ static bool LoadVGMFile(const char* path) {
         vgmfseek(f, offset, SEEK_SET);
         return ReadLE32(f);
     };
-    if (readChipClock(0x28) != 0) { s_vgmHasDAC = true; s_emuChipCount++; }  // YM2612
+    if (readChipClock(0x2C) != 0) { s_vgmHasDAC = true; s_emuChipCount++; }  // YM2612
     if (readChipClock(0x84) != 0) { s_vgmHasPCE = true; s_emuChipCount++; }  // HuC6280
-    // NES, FDS, SCC, GB, WSwan: detect by scanning VGM command stream for chip-specific opcodes
-    // (these don't have reliable clock fields in VGM header)
 
     // GD3 tags at 0x14
     vgmfseek(f, 0x14, SEEK_SET);
@@ -1456,6 +1454,33 @@ static bool LoadVGMFile(const char* path) {
 
     DcLog("[VGM] hdr: ver=0x%X dataAbs=0x%X loopAbs=0x%X gd3Abs=0x%X AY8910Clk=%u\n",
         s_vgmVersion, s_vgmDataOffset, s_vgmLoopOffset, gd3Off, ay8910Clock);
+
+    // Scan VGM command stream for chip-specific opcodes (first 8KB)
+    {
+        size_t scanLen = (s_memData.size() > 0) ? (s_memData.size() - s_vgmDataOffset) : 8192;
+        if (scanLen > 8192) scanLen = 8192;
+        const UINT8* scanPtr = (s_memData.size() > 0) ? s_memData.data() + s_vgmDataOffset : nullptr;
+        size_t sp = 0;
+        while (sp < scanLen) {
+            UINT8 cmd = scanPtr[sp++];
+            if (cmd == 0x52) { s_vgmHasDAC = true; break; }
+            if (cmd == 0xD2) { s_vgmHasSCC = true; break; }
+            if (cmd == 0x66 || cmd == 0x67) break;
+            UINT8 skip = 0;
+            if (cmd >= 0x30 && cmd <= 0x3F) skip = 1;
+            else if (cmd >= 0x40 && cmd <= 0x4E) skip = 2;
+            else if (cmd >= 0x4F && cmd <= 0x5F) skip = 3;
+            else if (cmd == 0x61) skip = 2;
+            else if (cmd >= 0x70 && cmd <= 0x7F) skip = 0;
+            else if (cmd >= 0xA0 && cmd <= 0xBF) skip = 2;
+            else if (cmd >= 0xC0 && cmd <= 0xCF) skip = 3;
+            else if (cmd >= 0xD0 && cmd <= 0xDF) skip = 4;
+            else if (cmd >= 0xE0) skip = 4;
+            sp += skip;
+        }
+        if (s_vgmHasDAC && s_emuChipCount == 0) s_emuChipCount++;
+        if (s_vgmHasSCC) s_emuChipCount++;
+    }
 
     ParseGD3Tags(f, gd3Off);
 

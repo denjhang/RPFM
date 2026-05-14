@@ -265,6 +265,15 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
         }
         break;
     }
+    case CMD_SET_ACTIVE_CHIPS: {
+        // bitmask: bit0 = SCC (0xD2)
+        if (len >= 4) {
+            uint32_t mask = payload[0] | ((uint32_t)payload[1] << 8) |
+                            ((uint32_t)payload[2] << 16) | ((uint32_t)payload[3] << 24);
+            vgm_player_set_active_chips(mask);
+        }
+        break;
+    }
     case CMD_NOP:
     default:
         break;

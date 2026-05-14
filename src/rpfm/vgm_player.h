@@ -12,6 +12,7 @@
 #include "protocol.h"
 #include "hardware/pwm.h"
 #include "emu/mixer.h"
+#include "emu/scc.h"
 
 #define PIN_DAC_PWM  22
 
@@ -55,6 +56,10 @@ static volatile bool s_dac_enabled = false;
 
 // Mixer for software emulators + DAC passthrough
 static mixer_t s_mixer;
+
+// Software emulator instances
+static scc_state_t s_scc;
+static spfm_emu_t s_scc_emu;
 
 static inline void dac_pwm_init(void) {
     gpio_set_function(PIN_DAC_PWM, GPIO_FUNC_PWM);
@@ -233,6 +238,15 @@ static void core1_vgm_main(void) {
                     }
                 }
             }
+            else if (cmd == 0xD2) {
+                uint8_t port, reg, data;
+                if (!vgm_read_byte(&port) || !vgm_read_byte(&reg) || !vgm_read_byte(&data)) {
+                    s_status &= ~STATUS_PLAYING;
+                    break;
+                }
+                if (s_scc_emu.active)
+                    scc_write(&s_scc, port & 0x7F, reg, data);
+            }
             else {
                 uint8_t skip = VGM_CMD_LEN[cmd];
                 if (skip > 1) vgm_skip_bytes(skip - 1);
@@ -259,6 +273,17 @@ static void vgm_player_init(cmd_buf_t *buf, PIO pio, uint sm) {
     s_vgm_sm = sm;
     mixer_init(&s_mixer);
     dac_pwm_init();
+
+    // Init SCC emulator (default clock, will be updated by CMD_SET_ACTIVE_CHIPS)
+    scc_init(&s_scc, 3579545);  // typical MSX clock
+    s_scc_emu.chip_id = 0xD2;
+    s_scc_emu.active = false;
+    s_scc_emu.volume = 128;
+    s_scc_emu.state = &s_scc;
+    s_scc_emu.write_reg = NULL;  // uses scc_write directly
+    s_scc_emu.render = (int8_t(*)(void*))scc_render;
+    s_scc_emu.init = NULL;
+    s_scc_emu.reset = NULL;  // reset handled by vgm_player_stop
 }
 
 static void vgm_player_start(uint32_t loop_offset) {
@@ -268,6 +293,7 @@ static void vgm_player_start(uint32_t loop_offset) {
     s_dac_enabled = false;
     s_mixer.dac_active = false;
     s_mixer.dac_sample = 0;
+    if (s_scc_emu.active) scc_reset(&s_scc);
     s_status |= STATUS_PLAYING;
 }
 
@@ -278,6 +304,17 @@ static void vgm_player_stop(void) {
 static void vgm_player_set_mute(uint8_t mask, int8_t solo) {
     s_mute_mask = mask;
     s_solo_ch = solo;
+}
+
+static void vgm_player_set_active_chips(uint32_t mask) {
+    // bit0 = SCC
+    s_scc_emu.active = (mask & 0x01) != 0;
+    if (s_scc_emu.active) {
+        mixer_clear_sources(&s_mixer);
+        mixer_add_source(&s_mixer, &s_scc_emu);
+    } else {
+        mixer_clear_sources(&s_mixer);
+    }
 }
 
 #endif

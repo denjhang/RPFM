@@ -16,7 +16,8 @@
 - **VGM 流传输优化**：`VGMStreamThread` 每次迭代最多发送 8 帧（fire-and-forget 模式），每批仅轮询一次固件 buf_level/tick，减少 HID 同步读取开销。HID 写入从 `HidD_SetOutputReport`（控制传输）改为 `WriteFile`（中断传输），吞吐量提升 5-10 倍
 - **GPIO22 PWM DAC**：YM2612 DAC 寄存器 (0x2A/0x2B) 输出 8-bit PCM 音频，硬件 PWM 无 CPU 开销。详见 `docs/PWM_DAC.md`
 - **软件仿真器框架**：`src/rpfm/emu/` 下新增仿真器接口 (`emu_common.h`) 和混音器 (`mixer.h`)，Core 1 VGM 循环集成混音输出。YM2612 DAC 改为 mixer 直通模式，为后续 SCC/FDS/NES/GB 等纯合成芯片仿真做准备。详见 `docs/PLAN_SOFT_EMULATOR_MIXER.md`
-- **仿真状态侧边栏**：侧边栏新增 Emulation 区域，checkbox 开启后显示当前 VGM 文件检测到的可仿真芯片列表（YM2612 DAC 等），设置持久化
+- **SCC (K051649) 仿真器**：第一个纯合成芯片仿真器，5ch 波形表合成。纯整数实现，零浮点，~2KB 代码。固件 Core 1 拦截 VGM 0xD2 命令，render 通过 mixer 输出到 GPIO22 PWM
+- **仿真状态侧边栏**：侧边栏新增 Emulation 区域（默认开启），加载 VGM 时自动扫描检测 YM2612 DAC / SCC / HuC6280 等芯片并显示列表，设置持久化
 
 ### Changed
 - **文件夹历史**：上限从 50 条增加到 200 条

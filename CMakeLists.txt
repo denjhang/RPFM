@@ -54,6 +54,7 @@ else()
     add_executable(${TARGET_NAME}
         src/${PROTO_DIR}/main.c
         src/${PROTO_DIR}/usb_descriptors.c
+        src/${PROTO_DIR}/emu/scc.c
     )
 
     pico_generate_pio_header(${TARGET_NAME} ${CMAKE_CURRENT_SOURCE_DIR}/src/${PROTO_DIR}/spfm_bus.pio)
